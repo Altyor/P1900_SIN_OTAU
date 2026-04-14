@@ -22,10 +22,10 @@ import android.bluetooth.*
 import android.content.*
 import android.content.pm.PackageManager
 import android.net.Uri
-import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.PowerManager
 import android.provider.OpenableColumns
 import android.provider.Settings
 import android.text.TextUtils
@@ -33,7 +33,7 @@ import android.util.Log
 import android.view.*
 import android.view.View.OnScrollChangeListener
 import android.widget.*
-import androidx.annotation.RequiresApi
+import androidx.core.content.ContextCompat
 import androidx.core.content.ContextCompat.startActivity
 import androidx.core.view.children
 import androidx.fragment.app.Fragment
@@ -98,6 +98,7 @@ class DeviceServicesActivity : BaseActivity() {
     private var appPath = ""
     private var stackPath = ""
 
+
     private var bluetoothBinding: BluetoothService.Binding? = null
     var bluetoothService: BluetoothService? = null
         private set
@@ -107,6 +108,17 @@ class DeviceServicesActivity : BaseActivity() {
     var bluetoothGatt: BluetoothGatt? = null
 
     private var retryAttempts = 0
+    private var firmwareVersion: String? = null
+    private var firmwareVersionAntenna: String? = null
+    private var firmwareVersionPower: String? = null
+    private var modelNumber: String? = null
+
+    // Firmware version refresh functionality
+    private var firmwareRefreshRunnable: Runnable? = null
+    private val firmwareRefreshInterval = 10000L // Refresh every 10 seconds
+
+    // Wake lock to keep device awake during OTA
+    private var wakeLock: PowerManager.WakeLock? = null
 
     private lateinit var binding:ActivityDeviceServicesBinding
 
@@ -165,7 +177,7 @@ class DeviceServicesActivity : BaseActivity() {
                 MtuReadType.VIEW_INITIALIZATION -> {
                     MTU = if (status == BluetoothGatt.GATT_SUCCESS) mtu
                     else DEFAULT_MTU_VALUE
-                    //gatt.requestConnectionPriority(connectionPriority)
+                    gatt.requestConnectionPriority(connectionPriority)
                 }
 
                 MtuReadType.UPLOAD_INITIALIZATION -> {
@@ -191,16 +203,21 @@ class DeviceServicesActivity : BaseActivity() {
         //CALLBACK ON CONNECTION STATUS CHANGES
         override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
             super.onConnectionStateChange(gatt, status, newState)
+
+            Log.d("OTA_DEBUG", "onConnectionStateChange: status=$status, newState=$newState, viewState=$viewState, device=${gatt.device.address}")
+
             if (bluetoothGatt?.device?.address != gatt.device.address) {
-                /* Some other device changed its state - do not react */
+                Log.w("OTA_DEBUG", "Connection state change for different device, ignoring")
                 return
             }
 
             when (newState) {
                 BluetoothGatt.STATE_CONNECTED -> {
+                    Log.d("OTA_DEBUG", "Device connected")
                     if (viewState == ViewState.REBOOTING ||
                         viewState == ViewState.REBOOTING_NEW_FIRMWARE
                     ) {
+                        Log.d("OTA_DEBUG", "Device reconnected during OTA process, discovering services")
                         handler.postDelayed({
                             bluetoothGatt = null
                             gatt.discoverServices()
@@ -209,10 +226,15 @@ class DeviceServicesActivity : BaseActivity() {
                 }
 
                 BluetoothGatt.STATE_DISCONNECTED -> {
+                    Log.d("OTA_DEBUG", "Device disconnected with status $status during state $viewState")
                     when (viewState) {
                         ViewState.IDLE -> when (status) {
-                            0 -> finish()
+                            0 -> {
+                                Log.d("OTA_DEBUG", "Normal disconnection in IDLE state, finishing activity")
+                                finish()
+                            }
                             else -> {
+                                Log.e("OTA_DEBUG", "Unexpected disconnection in IDLE state: status=$status")
                                 showLongMessage(
                                     ErrorCodes.getDeviceDisconnectedMessage(
                                         getDeviceName(),
@@ -225,22 +247,30 @@ class DeviceServicesActivity : BaseActivity() {
 
                         ViewState.REBOOTING -> when (status) {
                             19 -> {
-                                /* Device is reconnecting into ota mode */
+                                Log.d("OTA_DEBUG", "Expected disconnection for OTA mode reboot (status 19)")
                                 showInitializationInfo()
                             }
 
-                            0 -> {} /* Device reconnecting for another file upload, let it be */
-                            else -> showErrorDialog(status)
+                            0 -> {
+                                Log.d("OTA_DEBUG", "Normal disconnection during REBOOTING, device will reconnect")
+                            }
+                            else -> {
+                                Log.e("OTA_DEBUG", "Unexpected disconnection during REBOOTING: status=$status")
+                                showErrorDialog(status)
+                            }
                         }
 
-                        ViewState.UPLOADING -> showErrorDialog(status)
-                        ViewState.REBOOTING_NEW_FIRMWARE -> { /* Do nothing */
-                            Log.d("BLE_DEBUG","reboot completed")
-                            BLEUtils.IS_FIRMWARE_REBOOTED = true
-                            BLEUtils.REBOOTED_FIRMWARE_GATT_ADDRESS = gatt.device.address
+                        ViewState.UPLOADING -> {
+                            Log.e("OTA_DEBUG", "Device disconnected during UPLOADING! status=$status")
+                            showErrorDialog(status)
+                        }
+
+                        ViewState.REBOOTING_NEW_FIRMWARE -> {
+                            Log.d("OTA_DEBUG", "Device disconnected during firmware reboot, this is expected")
                         }
 
                         else -> {
+                            Log.w("OTA_DEBUG", "Device disconnected in unknown state: $viewState")
                             finish()
                         }
                     }
@@ -257,6 +287,40 @@ class DeviceServicesActivity : BaseActivity() {
             super.onCharacteristicRead(gatt, characteristic, status)
             remoteServicesFragment.updateCurrentCharacteristicView(characteristic.uuid)
 
+            when (characteristic.uuid) {
+                UuidConsts.FIRMWARE_VERSION -> {
+                    if (status == BluetoothGatt.GATT_SUCCESS) {
+                        val fullVersion = characteristic.getStringValue(0) ?: ""
+                        // Parse version string format: "3.13.0-3.1.5" (Antenna-Power)
+                        val versions = fullVersion.split("-")
+                        firmwareVersionAntenna = versions.getOrNull(0)
+                        firmwareVersionPower = versions.getOrNull(1)
+                        // Keep old behavior for title (show antenna version)
+                        firmwareVersion = firmwareVersionAntenna
+
+                        runOnUiThread {
+                            supportActionBar?.title = getDeviceName()
+                            updateFirmwareVersionDisplay()
+                        }
+
+                        // After reading firmware version, read model number
+                        getModelNumberCharacteristic()?.let { modelCharacteristic ->
+                            Log.d("OTA_DEBUG", "Reading model number after firmware version")
+                            gatt.readCharacteristic(modelCharacteristic)
+                        }
+                    }
+                }
+                UuidConsts.MODEL_NUMBER -> {
+                    if (status == BluetoothGatt.GATT_SUCCESS) {
+                        modelNumber = characteristic.getStringValue(0) ?: ""
+                        Log.d("OTA_DEBUG", "Model number read: $modelNumber")
+                        runOnUiThread {
+                            updateModelNumberDisplay()
+                        }
+                    }
+                }
+            }
+
             if (viewState == ViewState.REBOOTING_NEW_FIRMWARE) {
                 runOnUiThread { supportActionBar?.title = characteristic.getStringValue(0) }
                 viewState = ViewState.IDLE
@@ -266,6 +330,11 @@ class DeviceServicesActivity : BaseActivity() {
                     initServicesFragments(bluetoothGatt?.services.orEmpty())
                     mtuReadType = MtuReadType.VIEW_INITIALIZATION
                     gatt.requestMtu(INITIALIZATION_MTU_VALUE)
+
+                    // Refresh firmware version after new firmware is loaded
+                    handler.postDelayed({
+                        refreshFirmwareVersion()
+                    }, 2000)
                 }, GATT_FETCH_ON_SERVICE_DISCOVERED_DELAY)
             }
         }
@@ -279,38 +348,66 @@ class DeviceServicesActivity : BaseActivity() {
             super.onCharacteristicWrite(gatt, characteristic, status)
             remoteServicesFragment.updateCurrentCharacteristicView(characteristic.uuid, status)
 
+            Log.d("OTA_DEBUG", "onCharacteristicWrite: UUID=${characteristic.uuid}, status=$status, viewState=$viewState")
+
             if (status != BluetoothGatt.GATT_SUCCESS) {
+                Log.e("OTA_DEBUG", "Characteristic write failed: status=$status, UUID=${characteristic.uuid}")
                 showErrorDialog(status)
-                if (viewState == ViewState.UPLOADING) viewState = ViewState.IDLE
+                if (viewState == ViewState.UPLOADING) {
+                    Log.w("OTA_DEBUG", "Setting viewState from UPLOADING to IDLE due to write failure")
+                    viewState = ViewState.IDLE
+                }
             } else {
                 when (characteristic.uuid) {
                     UuidConsts.OTA_CONTROL -> {
-                        when (characteristic.value[0]) {
+                        val controlValue = characteristic.value[0]
+                        Log.d("OTA_DEBUG", "OTA_CONTROL write successful: value=$controlValue, viewState=$viewState")
+
+                        when (controlValue) {
                             0x00.toByte() -> {
+                                Log.d("OTA_DEBUG", "OTA_CONTROL: START command (0x00)")
                                 if (viewState == ViewState.REBOOTING) {
+                                    Log.d("OTA_DEBUG", "Starting device reload into OTA mode")
                                     reloadDeviceIntoOtaMode()
                                 } else if (viewState == ViewState.INITIALIZING_UPLOAD) {
+                                    Log.d("OTA_DEBUG", "Transitioning to UPLOADING state")
                                     viewState = ViewState.UPLOADING
                                     startOtaUpload()
                                 }
                             }
 
                             0x03.toByte() -> {
+                                Log.d("OTA_DEBUG", "OTA_CONTROL: END command (0x03)")
                                 if (viewState == ViewState.UPLOADING) {
+                                    Log.d("OTA_DEBUG", "OTA upload completed, setting state to IDLE")
                                     viewState = ViewState.IDLE
                                     if (boolFullOTA) {
+                                        Log.d("OTA_DEBUG", "Full OTA: preparing for next upload")
                                         prepareForNextUpload()
                                     } else {
-                                        runOnUiThread { otaProgressDialog?.toggleEndButton(isEnabled = true) }
+                                        Log.d("OTA_DEBUG", "Single OTA: automatically completing")
+                                        runOnUiThread {
+                                            otaProgressDialog?.toggleEndButton(isEnabled = true)
+                                            // Automatically complete OTA after a short delay to show 100% completion
+                                            handler.postDelayed({
+                                                Log.d("OTA_DEBUG", "Auto-completing OTA process - no manual intervention needed")
+                                                otaProgressCallback.onEndButtonClicked()
+                                            }, 1500) // 1.5 second delay to show completion
+                                        }
                                     }
                                 }
                             }
 
-                            else -> {}
+                            else -> {
+                                Log.w("OTA_DEBUG", "Unknown OTA_CONTROL command: $controlValue")
+                            }
                         }
                     }
 
-                    UuidConsts.OTA_DATA -> handleReliableUploadResponse()
+                    UuidConsts.OTA_DATA -> {
+                        Log.d("OTA_DEBUG", "OTA_DATA write successful, handling reliable upload response")
+                        handleReliableUploadResponse()
+                    }
                 }
             }
             bluetoothGatt?.readCharacteristic(characteristic)
@@ -350,14 +447,23 @@ class DeviceServicesActivity : BaseActivity() {
             super.onServicesDiscovered(gatt, status)
             bluetoothGatt = gatt
 
-            if (status != BluetoothGatt.GATT_SUCCESS) showErrorDialog(status)
-            else {
+            Log.d("OTA_DEBUG", "onServicesDiscovered: status=$status, viewState=$viewState, servicesCount=${gatt.services.size}")
+
+            if (status != BluetoothGatt.GATT_SUCCESS) {
+                Log.e("OTA_DEBUG", "Services discovery failed: status=$status")
+                showErrorDialog(status)
+            } else {
                 printServicesInfo(gatt)
                 otaDataCharPresent = (gatt.getService(UuidConsts.OTA_SERVICE)
                     ?.getCharacteristic(UuidConsts.OTA_DATA) != null)
 
+                Log.d("OTA_DEBUG", "OTA service present: ${gatt.getService(UuidConsts.OTA_SERVICE) != null}")
+                Log.d("OTA_DEBUG", "OTA control characteristic present: ${gatt.getService(UuidConsts.OTA_SERVICE)?.getCharacteristic(UuidConsts.OTA_CONTROL) != null}")
+                Log.d("OTA_DEBUG", "OTA data characteristic present: $otaDataCharPresent")
+
                 when (viewState) {
                     ViewState.REFRESHING_SERVICES -> {
+                        Log.d("OTA_DEBUG", "Services refreshed, updating UI")
                         handler.postDelayed({
                             runOnUiThread { initServicesFragments(bluetoothGatt?.services.orEmpty()) }
                         }, GATT_FETCH_ON_SERVICE_DISCOVERED_DELAY)
@@ -365,24 +471,36 @@ class DeviceServicesActivity : BaseActivity() {
                     }
 
                     ViewState.IDLE -> {
+                        Log.d("OTA_DEBUG", "Normal services discovery in IDLE state")
                         handler.postDelayed({
                             initServicesFragments(bluetoothGatt?.services.orEmpty())
                             mtuReadType = MtuReadType.VIEW_INITIALIZATION
                             gatt.requestMtu(INITIALIZATION_MTU_VALUE)
+
+                            // Try to read firmware version
+                            getFirmwareVersionCharacteristic()?.let { characteristic ->
+                                Log.d("OTA_DEBUG", "Reading firmware version during normal init")
+                                gatt.readCharacteristic(characteristic)
+                            }
                         }, GATT_FETCH_ON_SERVICE_DISCOVERED_DELAY)
                     }
 
                     ViewState.REBOOTING -> {
+                        Log.d("OTA_DEBUG", "Device rebooted for OTA, initializing upload")
                         viewState = ViewState.INITIALIZING_UPLOAD
                         mtuReadType = MtuReadType.UPLOAD_INITIALIZATION
-                        bluetoothGatt?.requestMtu(INITIALIZATION_MTU_VALUE)
+                        val result = bluetoothGatt?.requestMtu(INITIALIZATION_MTU_VALUE)
+                        Log.d("OTA_DEBUG", "MTU request for upload initialization: $result")
                     }
 
                     ViewState.REBOOTING_NEW_FIRMWARE -> {
+                        Log.d("OTA_DEBUG", "Device rebooted with new firmware, reading device name")
                         bluetoothGatt?.readCharacteristic(getDeviceNameCharacteristic())
                     }
 
-                    else -> {}
+                    else -> {
+                        Log.w("OTA_DEBUG", "Services discovered in unexpected state: $viewState")
+                    }
                 }
             }
         }
@@ -396,11 +514,28 @@ class DeviceServicesActivity : BaseActivity() {
     }
 
     private fun startOtaUpload() {
+        Log.d("OTA_DEBUG", "startOtaUpload: Starting OTA upload process")
+
+        // Acquire wake lock to keep device awake during OTA
+        acquireWakeLock()
+
         hideOtaLoadingDialog()
         otafile = readChosenFile()
+
+        if (otafile == null) {
+            Log.e("OTA_DEBUG", "OTA file is null! Cannot start upload.")
+            releaseWakeLock()
+            return
+        }
+
+        Log.d("OTA_DEBUG", "OTA file loaded: ${otafile!!.size} bytes, reliable=$reliable")
+
         pack = 0
         if (reliable) {
             setupMtuDivisible()
+            Log.d("OTA_DEBUG", "Reliable mode: MTU=$MTU, mtuDivisible=$mtuDivisible")
+        } else {
+            Log.d("OTA_DEBUG", "Non-reliable mode: MTU=$MTU")
         }
 
         hideOtaProgressDialog()
@@ -414,10 +549,17 @@ class DeviceServicesActivity : BaseActivity() {
             )
         )
 
+        Log.d("OTA_DEBUG", "Starting upload thread")
         Thread {
             Thread.sleep(DIALOG_DELAY)
-            if (reliable) otaWriteDataReliable()
-            else writeOtaData(otafile)
+            Log.d("OTA_DEBUG", "Upload thread started, beginning data transfer")
+            if (reliable) {
+                Log.d("OTA_DEBUG", "Using reliable upload method")
+                otaWriteDataReliable()
+            } else {
+                Log.d("OTA_DEBUG", "Using non-reliable upload method")
+                writeOtaData(otafile)
+            }
         }.start()
     }
 
@@ -437,9 +579,13 @@ class DeviceServicesActivity : BaseActivity() {
     private fun handleReliableUploadResponse() {
         if (reliable) {
             pack += mtuDivisible
+            Log.d("OTA_DEBUG", "handleReliableUploadResponse: pack=$pack, fileSize=${otafile?.size}, remaining=${(otafile?.size ?: 0) - pack}")
+
             if (pack <= otafile?.size!! - 1) {
+                Log.d("OTA_DEBUG", "Continuing reliable upload, next packet")
                 otaWriteDataReliable()
             } else if (pack > otafile?.size!! - 1) {
+                Log.d("OTA_DEBUG", "Reliable upload complete, stopping progress and sending END command")
                 handler.post {
                     runOnUiThread {
                         otaProgressDialog?.stopUploading()
@@ -448,6 +594,8 @@ class DeviceServicesActivity : BaseActivity() {
                 retryAttempts = 0
                 writeOtaControl(OTA_CONTROL_END_COMMAND)
             }
+        } else {
+            Log.w("OTA_DEBUG", "handleReliableUploadResponse called but reliable mode is disabled")
         }
     }
 
@@ -462,6 +610,7 @@ class DeviceServicesActivity : BaseActivity() {
     }
 
     private fun showErrorDialog(status: Int) {
+        releaseWakeLock()
         runOnUiThread {
             errorDialog = ErrorDialog(status, object : OtaErrorCallback {
                 override fun onDismiss() {
@@ -546,9 +695,6 @@ class DeviceServicesActivity : BaseActivity() {
     }
 
     private fun setupActionBar() {
-        AppUtil.setEdgeToEdge(window, this)
-        setSupportActionBar(binding.toolbar)
-        binding.toolbar.popupTheme = androidx.appcompat.R.style.ThemeOverlay_AppCompat_Light
         supportActionBar?.apply {
             setDisplayHomeAsUpEnabled(true)
             setDisplayShowHomeEnabled(true)
@@ -583,11 +729,49 @@ class DeviceServicesActivity : BaseActivity() {
     }
 
     private fun checkForOtaCharacteristic() {
-        if (getOtaControlCharacteristic() != null) showOtaConfigDialog()
-        else OtaCharacteristicMissingDialog().show(
-            supportFragmentManager,
-            "ota_characteristic_missing_dialog"
-        )
+        if (getOtaControlCharacteristic() != null) {
+            // Check if we have a global OTA file selected
+            if (globalOtaFilePath.isNotEmpty()) {
+                // Skip config dialog and start OTA directly
+                startDirectOta()
+            } else {
+                // No file selected, show file selection dialog
+                showMessage("No OTA file selected. Please restart the app and select an OTA file.")
+            }
+        } else {
+            OtaCharacteristicMissingDialog().show(
+                supportFragmentManager,
+                "ota_characteristic_missing_dialog"
+            )
+        }
+    }
+
+    private fun startDirectOta() {
+        Log.d("OTA_DEBUG", "Starting direct OTA with file: $globalOtaFileName")
+
+        if (viewState == ViewState.IDLE) {
+            // Set the app path to the global OTA file path
+            appPath = globalOtaFilePath
+
+            // Use reliable mode as default (like the original config dialog)
+            reliable = true
+
+            // Check if OTA data characteristic is present
+            if (otaDataCharPresent) {
+                Log.d("OTA_DEBUG", "OTA data characteristic already present, starting upload initialization")
+                viewState = ViewState.INITIALIZING_UPLOAD
+                mtuReadType = MtuReadType.UPLOAD_INITIALIZATION
+                val result = bluetoothGatt?.requestMtu(INITIALIZATION_MTU_VALUE)
+                Log.d("OTA_DEBUG", "MTU request result: $result")
+            } else {
+                Log.d("OTA_DEBUG", "OTA data characteristic not present, rebooting device to OTA mode")
+                viewState = ViewState.REBOOTING
+                writeOtaControl(OTA_CONTROL_START_COMMAND)
+            }
+        } else {
+            Log.w("OTA_DEBUG", "Cannot start OTA: device not in IDLE state (current: $viewState)")
+            showMessage("Device is not ready for OTA. Please wait or disconnect and reconnect.")
+        }
     }
 
     private fun registerReceivers() {
@@ -643,6 +827,16 @@ class DeviceServicesActivity : BaseActivity() {
             ?.getCharacteristic(UuidConsts.DEVICE_NAME)
     }
 
+    private fun getFirmwareVersionCharacteristic(): BluetoothGattCharacteristic? {
+        return bluetoothGatt?.getService(UuidConsts.DEVICE_INFORMATION)
+            ?.getCharacteristic(UuidConsts.FIRMWARE_VERSION)
+    }
+
+    private fun getModelNumberCharacteristic(): BluetoothGattCharacteristic? {
+        return bluetoothGatt?.getService(UuidConsts.DEVICE_INFORMATION)
+            ?.getCharacteristic(UuidConsts.MODEL_NUMBER)
+    }
+
     private fun setActivityResult() {
         setResult(REFRESH_INFO_RESULT_CODE, Intent().apply {
             putExtra(CONNECTED_DEVICE, bluetoothDevice)
@@ -661,6 +855,9 @@ class DeviceServicesActivity : BaseActivity() {
             if (!isGattConnected()) {
                 showMessage(R.string.toast_debug_connection_failed)
                 finish()
+            } else {
+                // Start periodic firmware version refresh when connected
+                startFirmwareVersionRefresh()
             }
         }
     }
@@ -668,44 +865,29 @@ class DeviceServicesActivity : BaseActivity() {
     override fun onPause() {
         super.onPause()
         bluetoothService?.unregisterGattCallback()
+        // Stop periodic firmware version refresh when paused
+        stopFirmwareVersionRefresh()
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        try {
-            if (!isFinishing && !isDestroyed) {
-                runOnUiThread {
-                    if (mtuRequestDialog?.isVisible == true && mtuRequestDialog?.isShowing() == true) {
-                        mtuRequestDialog?.dismiss()
-                    }
-                    if(otaConfigDialog?.isVisible == true && otaConfigDialog?.isShowing() == true){
-                        otaConfigDialog?.dismiss()
-                    }
-                }
-                hideOtaProgressDialog()
-                hideOtaLoadingDialog()
-                runOnUiThread {
-                    if(errorDialog?.isVisible == true && errorDialog?.isShowing() == true){
-                        errorDialog?.dismiss()
-                    }
 
-                }
-            }
-            unregisterReceivers()
-            bluetoothService?.isNotificationEnabled = true
-            bluetoothBinding?.unbind()
-        } catch (e: Exception) {
-            if(e is IllegalStateException){
-                Log.e("Devices Services Activity","Illegal State Exception")
-            }else{
-                Log.e("Devices Services Activity","Exception"+e.message)
-            }
-        }
+        mtuRequestDialog?.dismiss()
+        otaConfigDialog?.dismiss()
+        hideOtaProgressDialog()
+        hideOtaLoadingDialog()
+        errorDialog?.dismiss()
 
+        // Stop firmware version refresh
+        stopFirmwareVersionRefresh()
 
+        unregisterReceivers()
+        bluetoothService?.isNotificationEnabled = true
+        bluetoothBinding?.unbind()
     }
 
     override fun finish() {
+        releaseWakeLock()
         hideOtaLoadingDialog()
         hideOtaProgressDialog()
         setActivityResult()
@@ -771,7 +953,7 @@ class DeviceServicesActivity : BaseActivity() {
             binding.fragmentContainer.visibility = View.GONE
             binding.servicesContainer.visibility = View.VISIBLE
             isLogFragmentOn = false
-            supportActionBar?.title = bluetoothDevice?.name
+            supportActionBar?.title = getDeviceName()
             toggleMenuItemsVisibility(areVisible = true)
         }
     }
@@ -817,34 +999,16 @@ class DeviceServicesActivity : BaseActivity() {
         if (SharedPrefUtils(this@DeviceServicesActivity).shouldDisplayUnbondDeviceDialog()) {
             val dialog = UnbondDeviceDialog(object : UnbondDeviceDialog.Callback {
                 override fun onOkClicked() {
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.BAKLAVA) {
-                        unbondDevice(device)
-                    } else {
-                        removeBond(device)
-                    }
+                    unbondDevice(device)
                 }
             })
             dialog.show(supportFragmentManager, "dialog_unbond_device")
         } else {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.BAKLAVA) {
-                unbondDevice(device)
-            } else {
-                removeBond(device)
-            }
+            unbondDevice(device)
         }
     }
 
-    @RequiresApi(Build.VERSION_CODES.BAKLAVA)
     private fun unbondDevice(device: BluetoothDevice) {
-        // Try to use CompanionDeviceManager-based bond removal if available and associated
-        if (bluetoothService != null) {
-            val associationId = bluetoothService?.getAssociationIdForDevice(device.address)
-            if (associationId != null) {
-                bluetoothService?.removeBluetoothBond(associationId)
-                return
-            }
-        }
-        // Fallback to reflection-based removeBond
         if (!removeBond(device)) {
             if (SharedPrefUtils(this@DeviceServicesActivity).shouldDisplayManualUnbondDeviceDialog()) {
                 val dialog = ManualUnbondDeviceDialog(object : ManualUnbondDeviceDialog.Callback {
@@ -870,6 +1034,36 @@ class DeviceServicesActivity : BaseActivity() {
             return device::class.java.getMethod("removeBond").invoke(device) as Boolean
         } catch (e: Exception) {
             false
+        }
+    }
+
+    private fun acquireWakeLock() {
+        try {
+            if (wakeLock == null) {
+                val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
+                wakeLock = powerManager.newWakeLock(
+                    PowerManager.PARTIAL_WAKE_LOCK,
+                    "SilabsOTA:OtaUploadWakeLock"
+                )
+                wakeLock?.acquire(10 * 60 * 1000L) // 10 minutes max, should be enough for OTA
+                Log.d("OTA_DEBUG", "Wake lock acquired")
+            }
+        } catch (e: Exception) {
+            Log.e("OTA_DEBUG", "Error acquiring wake lock: ${e.message}")
+        }
+    }
+
+    private fun releaseWakeLock() {
+        try {
+            wakeLock?.let {
+                if (it.isHeld) {
+                    it.release()
+                    Log.d("OTA_DEBUG", "Wake lock released")
+                }
+                wakeLock = null
+            }
+        } catch (e: Exception) {
+            Log.e("OTA_DEBUG", "Error releasing wake lock: ${e.message}")
         }
     }
 
@@ -912,18 +1106,26 @@ class DeviceServicesActivity : BaseActivity() {
             * 6. Start writing to OTA_DATA characteristic
             * 7. Write 0x03 to OTA_CONTROL to end upload    */
 
+            Log.d("OTA_DEBUG", "OTA clicked: reliableMode=$isReliableMode, viewState=$viewState, otaDataCharPresent=$otaDataCharPresent")
+
             if (viewState == ViewState.IDLE) {
+                Log.d("OTA_DEBUG", "Starting OTA process")
                 otaConfigDialog = null
                 reliable = isReliableMode
 
                 if (otaDataCharPresent) {
+                    Log.d("OTA_DEBUG", "OTA data characteristic already present, starting upload initialization")
                     viewState = ViewState.INITIALIZING_UPLOAD
                     mtuReadType = MtuReadType.UPLOAD_INITIALIZATION
-                    bluetoothGatt?.requestMtu(INITIALIZATION_MTU_VALUE)
+                    val result = bluetoothGatt?.requestMtu(INITIALIZATION_MTU_VALUE)
+                    Log.d("OTA_DEBUG", "MTU request result: $result")
                 } else {
+                    Log.d("OTA_DEBUG", "OTA data characteristic not present, rebooting device to OTA mode")
                     viewState = ViewState.REBOOTING
                     writeOtaControl(OTA_CONTROL_START_COMMAND)
                 }
+            } else {
+                Log.w("OTA_DEBUG", "Cannot start OTA: device not in IDLE state (current: $viewState)")
             }
         }
 
@@ -947,10 +1149,8 @@ class DeviceServicesActivity : BaseActivity() {
 
     private fun hideOtaProgressDialog() {
         runOnUiThread {
-            if(otaProgressDialog?.isVisible == true && otaProgressDialog?.isShowing() == true){
-                otaProgressDialog?.dismiss()
-                otaProgressDialog = null
-            }
+            otaProgressDialog?.dismiss()
+            otaProgressDialog = null
         }
     }
 
@@ -965,6 +1165,7 @@ class DeviceServicesActivity : BaseActivity() {
     private val otaProgressCallback = object : OtaProgressDialog.Callback {
         override fun onEndButtonClicked() {
             hideOtaProgressDialog()
+            releaseWakeLock()
             showMessage(getString(R.string.ota_uploading_successful))
 
             remoteServicesFragment.clear()
@@ -974,6 +1175,11 @@ class DeviceServicesActivity : BaseActivity() {
             viewState = ViewState.REBOOTING_NEW_FIRMWARE
             bluetoothGatt?.disconnect()
             reconnect(requestRssiUpdates = true)
+
+            // Schedule firmware version refresh after OTA completion
+            handler.postDelayed({
+                refreshFirmwareVersion()
+            }, 5000) // Give device time to reboot and stabilize
         }
     }
 
@@ -985,10 +1191,8 @@ class DeviceServicesActivity : BaseActivity() {
 
     private fun hideOtaLoadingDialog() {
         runOnUiThread {
-            if (otaLoadingDialog?.isShowing() == true && otaLoadingDialog?.isVisible == true){
-                otaLoadingDialog?.dismiss()
-                otaLoadingDialog = null
-            }
+            otaLoadingDialog?.dismiss()
+            otaLoadingDialog = null
         }
     }
 
@@ -1019,7 +1223,10 @@ class DeviceServicesActivity : BaseActivity() {
     }
 
     private fun writeOtaControl(ctrl: Byte) {
+        Log.d("OTA_DEBUG", "writeOtaControl: command=0x${ctrl.toString(16)}, viewState=$viewState")
+
         if (ctrl == OTA_CONTROL_START_COMMAND) {
+            Log.d("OTA_DEBUG", "Disabling notifications for OTA start")
             bluetoothService?.isNotificationEnabled = false
         }
 
@@ -1029,13 +1236,25 @@ class DeviceServicesActivity : BaseActivity() {
             else -> 0
         }.toLong()
 
+        Log.d("OTA_DEBUG", "Control command delay: ${controlDelay}ms")
+
         getOtaControlCharacteristic()?.apply {
             writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
             value = byteArrayOf(ctrl)
-        }.also {
+            Log.d("OTA_DEBUG", "OTA control characteristic prepared, value=[${ctrl.toString(16)}]")
+        }.also { characteristic ->
+            if (characteristic == null) {
+                Log.e("OTA_DEBUG", "OTA control characteristic is null!")
+                return
+            }
+
             handler.postDelayed({
-                Timber.d("writeOtaControl(): ctrl = $ctrl")
-                bluetoothGatt?.writeCharacteristic(it)
+                Log.d("OTA_DEBUG", "Writing OTA control characteristic: ctrl = 0x${ctrl.toString(16)}")
+                val result = bluetoothGatt?.writeCharacteristic(characteristic)
+                Log.d("OTA_DEBUG", "writeCharacteristic result: $result")
+                if (result != true) {
+                    Log.e("OTA_DEBUG", "Failed to write OTA control characteristic!")
+                }
             }, controlDelay)
         }
     }
@@ -1124,9 +1343,13 @@ class DeviceServicesActivity : BaseActivity() {
      */
     @Synchronized
     fun otaWriteDataReliable() {
+        Log.d("OTA_DEBUG", "otaWriteDataReliable: pack=$pack, mtuDivisible=$mtuDivisible, fileSize=${otafile?.size}")
+
         val writearray: ByteArray
         val pgss: Float
+
         if (pack + mtuDivisible > otafile?.size!! - 1) {
+            Log.d("OTA_DEBUG", "Writing final packet (last chunk)")
             /**SET last by 4 */
             var plus = 0
             var last = otafile?.size!! - pack
@@ -1134,20 +1357,18 @@ class DeviceServicesActivity : BaseActivity() {
                 last += plus
                 plus++
             } while (last % 4 != 0)
+
+            Log.d("OTA_DEBUG", "Final packet size: $last bytes (padded for 4-byte alignment)")
             writearray = ByteArray(last)
             for ((j, i) in (pack until pack + last).withIndex()) {
                 if (otafile?.size!! - 1 < i) {
-                    writearray[j] = 0xFF.toByte()
+                    writearray[j] = 0xFF.toByte() // Padding
                 } else writearray[j] = otafile!![i]
             }
             pgss = ((pack + last).toFloat() / (otafile?.size!! - 1)) * 100
-            Log.d(
-                "characte",
-                "last: " + pack + " / " + (pack + last) + " : " + Converters.bytesToHexWhitespaceDelimited(
-                    writearray
-                )
-            )
+            Log.d("OTA_DEBUG", "Final packet: bytes $pack to ${pack + last} (${writearray.size} bytes), progress=$pgss%")
         } else {
+            Log.d("OTA_DEBUG", "Writing regular packet")
             var j = 0
             writearray = ByteArray(mtuDivisible)
             for (i in pack until pack + mtuDivisible) {
@@ -1155,20 +1376,34 @@ class DeviceServicesActivity : BaseActivity() {
                 j++
             }
             pgss = ((pack + mtuDivisible).toFloat() / (otafile?.size!! - 1)) * 100
-            Log.d(
-                "characte",
-                "pack: " + pack + " / " + (pack + mtuDivisible) + " : " + Converters.bytesToHexWhitespaceDelimited(
-                    writearray
-                )
-            )
+            Log.d("OTA_DEBUG", "Regular packet: bytes $pack to ${pack + mtuDivisible} (${writearray.size} bytes), progress=$pgss%")
         }
+
         val charac = bluetoothGatt?.getService(UuidConsts.OTA_SERVICE)
             ?.getCharacteristic(UuidConsts.OTA_DATA)
-        charac?.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
-        charac?.value = writearray
-        bluetoothGatt?.writeCharacteristic(charac)
+
+        if (charac == null) {
+            Log.e("OTA_DEBUG", "OTA_DATA characteristic is null! Cannot continue upload.")
+            return
+        }
+
+        charac.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT // Reliable mode needs ACK
+        charac.value = writearray
+
+        Log.d("OTA_DEBUG", "Writing OTA data packet (${writearray.size} bytes) - reliable mode")
+        val result = bluetoothGatt?.writeCharacteristic(charac)
+        Log.d("OTA_DEBUG", "writeCharacteristic result: $result")
+
+        if (result != true) {
+            Log.e("OTA_DEBUG", "Failed to write OTA data characteristic!")
+            return
+        }
+
         val waiting_time = (System.currentTimeMillis() - otatime)
-        val bitrate = 8 * pack.toFloat() / waiting_time
+        val bitrate = if (waiting_time > 0) 8 * pack.toFloat() / waiting_time else 0f
+
+        Log.d("OTA_DEBUG", "Data rate: $bitrate kbps, progress: $pgss%")
+
         if (pack > 0) {
             handler.post {
                 runOnUiThread {
@@ -1179,6 +1414,7 @@ class DeviceServicesActivity : BaseActivity() {
                 }
             }
         } else {
+            Log.d("OTA_DEBUG", "Starting OTA timer")
             otatime = System.currentTimeMillis()
         }
     }
@@ -1190,8 +1426,11 @@ class DeviceServicesActivity : BaseActivity() {
                 file = File(stackPath)
                 boolFullOTA = true
             } else {
-                file = File(appPath)
+                // Use global OTA file path if appPath is not set but global path is available
+                val filePath = if (appPath.isNotEmpty()) appPath else globalOtaFilePath
+                file = File(filePath)
                 boolFullOTA = false
+                Log.d("OTA_DEBUG", "Reading OTA file: $filePath (${file.length()} bytes)")
             }
             val fileInputStream = FileInputStream(file)
             val size = fileInputStream.available()
@@ -1200,7 +1439,7 @@ class DeviceServicesActivity : BaseActivity() {
             fileInputStream.close()
             temp
         } catch (e: Exception) {
-            Log.e("InputStream", "Couldn't open file$e")
+            Log.e("OTA_DEBUG", "Couldn't open OTA file: $e")
             null
         }
     }
@@ -1209,9 +1448,12 @@ class DeviceServicesActivity : BaseActivity() {
         return if (stackPath != "" && doubleStepUpload) {
             val last = stackPath.lastIndexOf(File.separator)
             getString(R.string.ota_filename_s, stackPath.substring(last).removePrefix("/"))
-        } else {
+        } else if (appPath.isNotEmpty()) {
             val last = appPath.lastIndexOf(File.separator)
             getString(R.string.ota_filename_s, appPath.substring(last).removePrefix("/"))
+        } else {
+            // Use global filename
+            getString(R.string.ota_filename_s, globalOtaFileName)
         }
     }
 
@@ -1357,6 +1599,117 @@ class DeviceServicesActivity : BaseActivity() {
         } ?: getString(R.string.not_advertising_shortcut)
     }
 
+    private fun getDeviceNameWithFirmware(): String {
+        val deviceName = getDeviceName()
+        return firmwareVersion?.let { version ->
+            "$deviceName ($version)"
+        } ?: deviceName
+    }
+
+    private fun updateFirmwareVersionDisplay() {
+        runOnUiThread {
+            // Antenna version display
+            firmwareVersionAntenna?.let { versionAntenna ->
+                binding.tvFirmwareVersionAntenna.apply {
+                    text = versionAntenna
+                    visibility = View.VISIBLE
+                    // Check antenna version based on model number (including _PRO variants)
+                    val isCorrectAntennaVersion = when (modelNumber) {
+                        "SIN-4-2-20", "SIN-4-2-20_PRO" -> versionAntenna == "3.13.0"
+                        "SIN-4-RS-20", "SIN-4-RS-20_PRO" -> versionAntenna == "3.12.0"
+                        else -> false
+                    }
+                    val backgroundColor = if (isCorrectAntennaVersion) {
+                        ContextCompat.getColor(this@DeviceServicesActivity, R.color.silabs_green)
+                    } else {
+                        ContextCompat.getColor(this@DeviceServicesActivity, R.color.silabs_red)
+                    }
+                    setBackgroundColor(backgroundColor)
+                }
+            }
+
+            // Power version display (same for both models)
+            firmwareVersionPower?.let { versionPower ->
+                binding.tvFirmwareVersionPower.apply {
+                    text = versionPower
+                    visibility = View.VISIBLE
+                    val backgroundColor = if (versionPower == "3.1.5") {
+                        ContextCompat.getColor(this@DeviceServicesActivity, R.color.silabs_green)
+                    } else {
+                        ContextCompat.getColor(this@DeviceServicesActivity, R.color.silabs_red)
+                    }
+                    setBackgroundColor(backgroundColor)
+                }
+            }
+
+            // Show container if at least one version is available
+            if (firmwareVersionAntenna != null || firmwareVersionPower != null) {
+                binding.firmwareVersionsContainer.visibility = View.VISIBLE
+            }
+        }
+    }
+
+    private fun updateModelNumberDisplay() {
+        runOnUiThread {
+            modelNumber?.let { model ->
+                binding.tvModelNumber.apply {
+                    text = model
+                    visibility = View.VISIBLE
+                    // Accept only SIN-4-2-20 and SIN-4-RS-20 as valid models
+                    val isValidModel = (model == "SIN-4-2-20" || model == "SIN-4-RS-20")
+                    val backgroundColor = if (isValidModel) {
+                        ContextCompat.getColor(this@DeviceServicesActivity, R.color.silabs_green)
+                    } else {
+                        ContextCompat.getColor(this@DeviceServicesActivity, R.color.silabs_red)
+                    }
+                    setBackgroundColor(backgroundColor)
+                }
+
+                // Update firmware display in case it was already read
+                // (to apply correct color based on model)
+                if (firmwareVersionAntenna != null || firmwareVersionPower != null) {
+                    updateFirmwareVersionDisplay()
+                }
+            }
+        }
+    }
+
+    private fun refreshFirmwareVersion() {
+        // Don't interfere with OTA operations
+        if (viewState == ViewState.REBOOTING ||
+            viewState == ViewState.INITIALIZING_UPLOAD ||
+            viewState == ViewState.UPLOADING ||
+            viewState == ViewState.REBOOTING_NEW_FIRMWARE) {
+            Log.d("FirmwareRefresh", "Skipping firmware version refresh during OTA operation: $viewState")
+            return
+        }
+
+        getFirmwareVersionCharacteristic()?.let { characteristic ->
+            Log.d("FirmwareRefresh", "Reading firmware version characteristic")
+            bluetoothGatt?.readCharacteristic(characteristic)
+        } ?: Log.w("FirmwareRefresh", "Firmware version characteristic not available")
+    }
+
+    private fun startFirmwareVersionRefresh() {
+        stopFirmwareVersionRefresh() // Stop any existing refresh
+
+        firmwareRefreshRunnable = Runnable {
+            refreshFirmwareVersion()
+            // Schedule next refresh
+            handler.postDelayed(firmwareRefreshRunnable!!, firmwareRefreshInterval)
+        }
+
+        // Start the periodic refresh
+        handler.postDelayed(firmwareRefreshRunnable!!, firmwareRefreshInterval)
+    }
+
+    private fun stopFirmwareVersionRefresh() {
+        firmwareRefreshRunnable?.let { runnable ->
+            handler.removeCallbacks(runnable)
+            firmwareRefreshRunnable = null
+        }
+    }
+
     private fun prepareOtaFile(uri: Uri?, type: OtaFileType, filename: String) {
         try {
             val inStream = contentResolver.openInputStream(uri!!)
@@ -1424,6 +1777,10 @@ class DeviceServicesActivity : BaseActivity() {
         const val CONNECTED_DEVICE = "connected_device"
         const val CONNECTION_STATE = "connection_state"
         const val REFRESH_INFO_RESULT_CODE = 279
+
+        // Global OTA file path that persists for the app session
+        var globalOtaFilePath: String = ""
+        var globalOtaFileName: String = ""
 
         fun startActivity(context: Context, device: BluetoothDevice) {
             Intent(context, DeviceServicesActivity::class.java).apply {

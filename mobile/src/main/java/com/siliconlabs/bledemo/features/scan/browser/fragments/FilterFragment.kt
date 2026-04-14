@@ -23,7 +23,7 @@ class FilterFragment : DialogFragment() {
     // Flag to control if the listener should be active
     private var isListenerEnabled = true
 
-    private var rssiFlag = false
+    private var rssiFlag = true  // Set to true by default to apply RSSI filter
 
     override fun onAttach(context: Context) {
         super.onAttach(context)
@@ -133,8 +133,14 @@ class FilterFragment : DialogFragment() {
             textviewSeekbarMax.text = getString(R.string.filter_seekbar_max)
             seekControlBar.max = resources.getInteger(R.integer.rssi_value_range)
             seekControlBar.progress = 0
-            seekControlText.text = getString(R.string.filter_rssi_not_set)
 
+            // Initialize with default RSSI range (-40 to 0 dBm)
+            val format = getString(R.string.n_dBm)
+            val defaultText = "(${String.format(format, -40)}, ${String.format(format, 0)})"
+            seekControlText.text = defaultText
+            viewModel.saveStartEndRssiRange(defaultText)
+            viewModel.updateOverallProgress(-40f, 0f)
+            viewModel.saveRSSISlideRValues(-40f, 0f)
 
             // Add a label formatter to show the tooltip text with the slider value
             slider.setLabelFormatter { value ->
@@ -177,11 +183,14 @@ class FilterFragment : DialogFragment() {
 
     private fun resetFilters() {
         viewBinding.apply {
-            etSearchDeviceName.text.clear()
+            etSearchDeviceName.setText("SIN")  // Default search filter for SIN devices
             seekBarRssi.seekControlBar.progress = 0
-            rssiFlag = false
-            //SET THE TEXT TO "NOT SET"
-            viewModel.saveStartEndRssiRange(getString(R.string.filter_rssi_not_set))
+            rssiFlag = true  // Keep RSSI filter active by default
+
+            // Set default RSSI range text (-40 to 0 dBm)
+            val format = getString(R.string.n_dBm)
+            val defaultText = "(${String.format(format, -40)}, ${String.format(format, 0)})"
+            viewModel.saveStartEndRssiRange(defaultText)
             viewModel.saveStartEndRSSIRange.observe(viewLifecycleOwner, androidx.lifecycle.Observer {
                 seekBarRssi.seekControlText.text = it
             })
@@ -191,9 +200,9 @@ class FilterFragment : DialogFragment() {
             cbOnlyConnectable.isChecked = false
             cbOnlyBonded.isChecked = false
             cbOnlyFavourites.isChecked = false
-            //UPDATE THE OVER ALL PROGRESS TO ZERO
-            viewModel.updateOverallProgress(0f,0f)
-            viewModel.saveRSSISlideRValues(-130f,0f)
+            //UPDATE THE OVER ALL PROGRESS TO DEFAULT (-40 to 0)
+            viewModel.updateOverallProgress(-40f,0f)
+            viewModel.saveRSSISlideRValues(-40f,0f)
             viewModel.sliderValues.observe(viewLifecycleOwner, androidx.lifecycle.Observer {
                 seekBarRssi.slider.setValues(it.first,it.second)
 

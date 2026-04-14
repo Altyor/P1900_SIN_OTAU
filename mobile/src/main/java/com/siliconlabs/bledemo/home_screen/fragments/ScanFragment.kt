@@ -54,12 +54,30 @@ class ScanFragment : Fragment(), BluetoothService.ScanListener {
 
         observeChanges()
 
+        // Apply default RSSI filter if no filters are set
+        if (viewModel.activeFilters.value == null) {
+            applyDefaultRssiFilter()
+        }
+
         if (!viewPagerFragment.isAdded) {
             childFragmentManager.beginTransaction().apply {
                 add(R.id.child_fragment_container, viewPagerFragment)
                 commit()
             }
         }
+    }
+
+    private fun applyDefaultRssiFilter() {
+        val defaultFilter = com.siliconlabs.bledemo.utils.FilterDeviceParams(
+            name = "SIN",
+            rssiValue = Pair(-40f, 0f),
+            isRssiFlag = true,
+            bleFormats = emptyList(),
+            isOnlyFavourite = false,
+            isOnlyConnectable = false,
+            isOnlyBonded = false
+        )
+        viewModel.updateFiltering(defaultFilter)
     }
 
     override fun onResume() {

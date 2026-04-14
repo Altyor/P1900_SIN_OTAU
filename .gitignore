@@ -6,3 +6,8 @@ wear/~
 *.iml
 /local.properties
 *.DS_Store
+Builds/
+mobile/Builds/
+build/
+*.apk
+*.idsig

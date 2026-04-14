@@ -1,0 +1,18 @@
+Changelog - NodOn BLE OTA MiF App - Based on Silabs app (v3.1.1)
+
+V1.0.0
+
+- Custom app name: "NodOn BLE OTA MiF"
+- Custom version display: "NodOn build by NT - V1.0.0 (based on V3.1.1
+  from Silabs)"
+- Firmware version display next to device name in connected state
+- Application startup OTA file selection prompt
+- Session-persistent OTA file storage
+- Direct OTA initiation without configuration dialogs
+- Automatic OTA completion at 100% progress
+- Default device name filter: "VAV"
+- Default RSSI range filter: -60 dBm to 0 dBm
+
+V1.0.0
+
+- FW version is displayed in green box if v3.13.0 otherwise in red box.

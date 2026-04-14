@@ -68,7 +68,7 @@ class ScanFragmentViewModel(private val context: Context) : ScannerViewModel() {
     val saveStartEndRSSIRange : MutableLiveData<String> get() = _saveStartEndRSSIRange
 
 
-    private val _sliderValues: MutableLiveData<Pair<Float, Float>> = MutableLiveData<Pair<Float, Float>>(Pair(-130f, 0f)) // Default values for left and right
+    private val _sliderValues: MutableLiveData<Pair<Float, Float>> = MutableLiveData<Pair<Float, Float>>(Pair(-40f, 0f)) // Default values for left and right
 
     val sliderValues: MutableLiveData<Pair<Float, Float>> get() = _sliderValues
 
