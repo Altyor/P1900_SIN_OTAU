@@ -5,8 +5,10 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.siliconlabs.bledemo.features.firmware_browser.data.SftpRepository
 import com.siliconlabs.bledemo.features.firmware_browser.domain.CardType
+import com.siliconlabs.bledemo.features.firmware_browser.domain.FirmwareSelection
 import com.siliconlabs.bledemo.features.firmware_browser.domain.PnInfo
 import com.siliconlabs.bledemo.features.firmware_browser.domain.ProductInfo
+import com.siliconlabs.bledemo.features.firmware_browser.domain.UiStrings
 import com.siliconlabs.bledemo.features.scan.browser.activities.DeviceServicesActivity
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -34,7 +36,7 @@ class FirmwareBrowserViewModel @Inject constructor(
                 .onSuccess { products ->
                     if (products.isEmpty()) {
                         _uiState.value = FirmwareBrowserUiState.Error(
-                            "No products found on the firmware server."
+                            UiStrings.noProductsFound
                         )
                     } else {
                         _uiState.value = FirmwareBrowserUiState.ProductList(products)
@@ -42,7 +44,7 @@ class FirmwareBrowserViewModel @Inject constructor(
                 }
                 .onFailure { e ->
                     _uiState.value = FirmwareBrowserUiState.Error(
-                        "Failed to connect to firmware server: ${e.message}"
+                        "${UiStrings.connectionFailed} : ${e.message}"
                     )
                 }
         }
@@ -57,7 +59,7 @@ class FirmwareBrowserViewModel @Inject constructor(
                     lastPnList = pns
                     when {
                         pns.isEmpty() -> _uiState.value = FirmwareBrowserUiState.Error(
-                            "No part numbers found for ${product.name}."
+                            "${UiStrings.failedToListPns} : ${product.name}"
                         )
                         pns.size == 1 -> {
                             selectedPn = pns.first()
@@ -74,7 +76,7 @@ class FirmwareBrowserViewModel @Inject constructor(
                 }
                 .onFailure { e ->
                     _uiState.value = FirmwareBrowserUiState.Error(
-                        "Failed to list part numbers: ${e.message}"
+                        "${UiStrings.failedToListPns} : ${e.message}"
                     )
                 }
         }
@@ -90,24 +92,26 @@ class FirmwareBrowserViewModel @Inject constructor(
         val product = selectedProduct ?: return
         val pn = selectedPn ?: return
 
-        _uiState.value = FirmwareBrowserUiState.Downloading("Loading firmware...")
+        _uiState.value = FirmwareBrowserUiState.Downloading(UiStrings.downloading)
         viewModelScope.launch {
-            // Fetch validation config
             val validationResult = sftpRepository.fetchValidation(product, pn)
             val validation = validationResult.getOrElse { e ->
                 _uiState.value = FirmwareBrowserUiState.Error(
-                    "Failed to read config: ${e.message}"
+                    "${UiStrings.failedToReadConfig} : ${e.message}"
                 )
                 return@launch
             }
 
-            // Download firmware file
             sftpRepository.downloadFirmware(product, pn, cardType, app.cacheDir)
                 .onSuccess { file ->
-                    // Set global OTA file for DeviceServicesActivity
                     DeviceServicesActivity.globalOtaFilePath = file.absolutePath
                     DeviceServicesActivity.globalOtaFileName = file.name
                     DeviceServicesActivity.selectedValidation = validation
+
+                    FirmwareSelection.productName = product.name
+                    FirmwareSelection.pnName = pn.name
+                    FirmwareSelection.cardType = cardType
+                    FirmwareSelection.fileName = file.name
 
                     _uiState.value = FirmwareBrowserUiState.Ready(
                         filePath = file.absolutePath,
@@ -117,7 +121,7 @@ class FirmwareBrowserViewModel @Inject constructor(
                 }
                 .onFailure { e ->
                     _uiState.value = FirmwareBrowserUiState.Error(
-                        "Failed to download firmware: ${e.message}"
+                        "${UiStrings.failedToDownload} : ${e.message}"
                     )
                 }
         }
@@ -132,7 +136,6 @@ class FirmwareBrowserViewModel @Inject constructor(
         when (currentState) {
             is FirmwareBrowserUiState.PnSelection -> loadProducts()
             is FirmwareBrowserUiState.CardSelection -> {
-                // If there was a PN selection step, go back to it; otherwise go to products
                 val product = selectedProduct
                 val lastPns = lastPnList
                 if (product != null && lastPns != null && lastPns.size > 1) {
@@ -142,7 +145,7 @@ class FirmwareBrowserViewModel @Inject constructor(
                 }
             }
             is FirmwareBrowserUiState.Error -> loadProducts()
-            else -> { /* no-op for Loading, Downloading, Ready, ProductList */ }
+            else -> {}
         }
     }
 }

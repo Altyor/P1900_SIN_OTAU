@@ -45,6 +45,7 @@ import androidx.compose.ui.unit.sp
 import com.siliconlabs.bledemo.features.firmware_browser.domain.CardType
 import com.siliconlabs.bledemo.features.firmware_browser.domain.PnInfo
 import com.siliconlabs.bledemo.features.firmware_browser.domain.ProductInfo
+import com.siliconlabs.bledemo.features.firmware_browser.domain.UiStrings
 import com.siliconlabs.bledemo.features.firmware_browser.presentation.FirmwareBrowserUiState
 import com.siliconlabs.bledemo.features.firmware_browser.presentation.FirmwareBrowserViewModel
 
@@ -63,7 +64,7 @@ fun FirmwareBrowserScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Firmware Browser") },
+                title = { Text(UiStrings.firmwareBrowserTitle) },
                 navigationIcon = {
                     val state = uiState
                     if (state is FirmwareBrowserUiState.PnSelection ||
@@ -72,7 +73,7 @@ fun FirmwareBrowserScreen(
                         IconButton(onClick = { viewModel.goBack() }) {
                             Icon(
                                 Icons.AutoMirrored.Filled.ArrowBack,
-                                contentDescription = "Back"
+                                contentDescription = UiStrings.back
                             )
                         }
                     }
@@ -134,7 +135,7 @@ private fun LoadingContent() {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
             CircularProgressIndicator()
             Spacer(modifier = Modifier.height(16.dp))
-            Text("Connecting to firmware server...")
+            Text(UiStrings.connecting)
         }
     }
 }
@@ -146,7 +147,7 @@ private fun ProductListContent(
 ) {
     Column(modifier = Modifier.fillMaxSize()) {
         Text(
-            text = "Select Product",
+            text = UiStrings.selectProduct,
             style = MaterialTheme.typography.titleLarge,
             modifier = Modifier.padding(16.dp)
         )
@@ -200,7 +201,7 @@ private fun PnSelectionContent(
 ) {
     Column(modifier = Modifier.fillMaxSize()) {
         Text(
-            text = "${product.name} - Select Part Number",
+            text = "${product.name} - ${UiStrings.selectPartNumber}",
             style = MaterialTheme.typography.titleLarge,
             modifier = Modifier.padding(16.dp)
         )
@@ -254,7 +255,7 @@ private fun CardSelectionContent(
         )
         Spacer(modifier = Modifier.height(32.dp))
         Text(
-            text = "Select Card to Update",
+            text = UiStrings.selectCardToUpdate,
             style = MaterialTheme.typography.titleMedium
         )
         Spacer(modifier = Modifier.height(24.dp))
@@ -288,7 +289,7 @@ private fun CardSelectionContent(
                     )
                     Spacer(modifier = Modifier.height(12.dp))
                     Text(
-                        text = "Antenna",
+                        text = UiStrings.antenna,
                         fontSize = 18.sp,
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.onPrimaryContainer
@@ -321,7 +322,7 @@ private fun CardSelectionContent(
                     )
                     Spacer(modifier = Modifier.height(12.dp))
                     Text(
-                        text = "Power",
+                        text = UiStrings.power,
                         fontSize = 18.sp,
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.onSecondaryContainer
@@ -361,7 +362,7 @@ private fun ReadyContent(fileName: String) {
             )
             Spacer(modifier = Modifier.height(16.dp))
             Text(
-                text = "Firmware Ready",
+                text = UiStrings.firmwareReady,
                 style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.Bold
             )
@@ -394,7 +395,7 @@ private fun ErrorContent(message: String, onRetry: () -> Unit) {
             )
             Spacer(modifier = Modifier.height(24.dp))
             Button(onClick = onRetry) {
-                Text("Retry")
+                Text(UiStrings.retry)
             }
         }
     }

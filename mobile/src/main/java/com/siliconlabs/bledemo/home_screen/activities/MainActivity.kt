@@ -46,11 +46,13 @@ open class MainActivity : BaseActivity(),
     private val firmwareBrowserLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
+        val strings = com.siliconlabs.bledemo.features.firmware_browser.domain.UiStrings
         if (result.resultCode == Activity.RESULT_OK) {
-            CustomToastManager.show(this, "Firmware selected and ready for OTA")
+            CustomToastManager.show(this, strings.firmwareSelected)
         } else {
-            CustomToastManager.show(this, "No firmware selected")
+            CustomToastManager.show(this, strings.noFirmwareSelected)
         }
+        updateFirmwareSelectionBar()
     }
 
     private val neededPermissions = mutableListOf(
@@ -238,6 +240,23 @@ open class MainActivity : BaseActivity(),
         firmwareBrowserLaunched = true
         val intent = Intent(this, FirmwareBrowserActivity::class.java)
         firmwareBrowserLauncher.launch(intent)
+    }
+
+    private fun updateFirmwareSelectionBar() {
+        val selection = com.siliconlabs.bledemo.features.firmware_browser.domain.FirmwareSelection
+        val strings = com.siliconlabs.bledemo.features.firmware_browser.domain.UiStrings
+        if (selection.isSelected()) {
+            _binding.firmwareSelectionBar.visibility = View.VISIBLE
+            val cardLabel = when (selection.cardType) {
+                com.siliconlabs.bledemo.features.firmware_browser.domain.CardType.ANTENNA -> strings.antenna
+                com.siliconlabs.bledemo.features.firmware_browser.domain.CardType.POWER -> strings.power
+                else -> ""
+            }
+            _binding.tvSelectedProduct.text = "${selection.productName} — $cardLabel"
+            _binding.tvSelectedFirmware.text = selection.fileName
+        } else {
+            _binding.firmwareSelectionBar.visibility = View.GONE
+        }
     }
 
     override fun onDestroy() {

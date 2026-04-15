@@ -60,8 +60,7 @@ class ViewPagerFragment : Fragment() {
         TabLayoutMediator(binding.scanTabLayout, binding.scanViewPager2) { tab, position ->
             tab.text = when (position) {
                 0 -> getString(R.string.tab_scanner_label)
-                1 -> getString(R.string.tab_rssi_graph_label)
-                2 -> getString(R.string.tab_connections_label)
+                1 -> getString(R.string.tab_connections_label)
                 else -> null
             }
         }.attach()
@@ -69,18 +68,17 @@ class ViewPagerFragment : Fragment() {
 
     private fun setupDataObservers() {
         viewModel.numberOfConnectedDevices.observe(viewLifecycleOwner) {
-            binding.scanTabLayout.getTabAt(2)?.text = getString(R.string.tab_connections_label, it)
+            binding.scanTabLayout.getTabAt(1)?.text = getString(R.string.tab_connections_label, it)
         }
     }
 
     private inner class ScanPagerAdapter : FragmentStateAdapter(this) {
-        override fun getItemCount() = 3
+        override fun getItemCount() = 2
 
         override fun createFragment(position: Int): Fragment {
             return when (position) {
                 0 -> BrowserFragment()
-                1 -> RssiGraphFragment()
-                2 -> ConnectionsFragment()
+                1 -> ConnectionsFragment()
                 else -> BrowserFragment()
             }
         }

@@ -9,6 +9,46 @@
     <include android:id="@+id/include_layout_edge_to_edge"
         layout="@layout/layout_edge_to_edge" />
 
+    <LinearLayout
+        android:id="@+id/firmware_selection_bar"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:background="#0F62F3"
+        android:padding="16dp"
+        android:gravity="center_vertical"
+        android:visibility="gone">
+
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:orientation="vertical">
+
+            <TextView
+                android:id="@+id/tv_selected_product"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:textColor="@android:color/white"
+                android:textSize="24sp"
+                android:textStyle="bold"
+                tools:text="SIN-4-2-20 — Antenne" />
+
+            <TextView
+                android:id="@+id/tv_selected_firmware"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:textColor="#CCFFFFFF"
+                android:textSize="16sp"
+                android:ellipsize="middle"
+                android:singleLine="true"
+                android:paddingTop="4dp"
+                tools:text="128b-0002-030D-700_nodon_sin_2_fw_efr32_V030D.zigbee" />
+
+        </LinearLayout>
+
+    </LinearLayout>
+
     <RelativeLayout
         android:layout_width="match_parent"
         android:layout_height="0dp"
@@ -30,7 +70,7 @@
             android:layout_alignParentStart="true"
             android:layout_alignParentBottom="true"
             android:layout_margin="@dimen/extended_fab_margin"
-            android:text="Change Product"
+            android:text="Changer de produit"
             app:icon="@android:drawable/stat_sys_download" />
 
     </RelativeLayout>

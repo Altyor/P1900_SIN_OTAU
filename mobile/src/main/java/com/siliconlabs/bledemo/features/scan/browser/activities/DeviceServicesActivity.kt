@@ -639,6 +639,7 @@ class DeviceServicesActivity : BaseActivity() {
         handler = Handler(Looper.getMainLooper())
 
         showCharacteristicLoadingAnimation(getString(R.string.debug_mode_device_loading_gatt_info))
+        updateDeviceFirmwareSelectionBar()
         bindBluetoothService()
         scanFragmentViewModel = ScanFragmentViewModel(this@DeviceServicesActivity)
     }
@@ -695,6 +696,7 @@ class DeviceServicesActivity : BaseActivity() {
     }
 
     private fun setupActionBar() {
+        setSupportActionBar(binding.toolbar)
         supportActionBar?.apply {
             setDisplayHomeAsUpEnabled(true)
             setDisplayShowHomeEnabled(true)
@@ -1652,11 +1654,12 @@ class DeviceServicesActivity : BaseActivity() {
     private fun updateModelNumberDisplay() {
         runOnUiThread {
             modelNumber?.let { model ->
+                val validation = selectedValidation
+                val isValidModel = validation?.modelNumbers?.contains(model) ?: false
+
                 binding.tvModelNumber.apply {
                     text = model
                     visibility = View.VISIBLE
-                    val validation = selectedValidation
-                    val isValidModel = validation?.modelNumbers?.contains(model) ?: false
                     val backgroundColor = if (isValidModel) {
                         ContextCompat.getColor(this@DeviceServicesActivity, R.color.silabs_green)
                     } else {
@@ -1665,12 +1668,48 @@ class DeviceServicesActivity : BaseActivity() {
                     setBackgroundColor(backgroundColor)
                 }
 
+                if (!isValidModel && validation != null) {
+                    showModelMismatchDialog(model, validation.modelNumbers)
+                }
+
                 // Update firmware display in case it was already read
                 // (to apply correct color based on model)
                 if (firmwareVersionAntenna != null || firmwareVersionPower != null) {
                     updateFirmwareVersionDisplay()
                 }
             }
+        }
+    }
+
+    private fun showModelMismatchDialog(deviceModel: String, expectedModels: List<String>) {
+        val selection = com.siliconlabs.bledemo.features.firmware_browser.domain.FirmwareSelection
+        val expected = if (selection.productName.isNotEmpty()) selection.productName
+            else expectedModels.firstOrNull() ?: "NULL"
+        val strings = com.siliconlabs.bledemo.features.firmware_browser.domain.UiStrings
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle(strings.modelMismatchTitle)
+            .setMessage(String.format(strings.modelMismatchMessage, deviceModel, expected))
+            .setCancelable(false)
+            .setNegativeButton(strings.disconnect) { dialog, _ ->
+                dialog.dismiss()
+                bluetoothGatt?.disconnect()
+                finish()
+            }
+            .show()
+    }
+
+    private fun updateDeviceFirmwareSelectionBar() {
+        val selection = com.siliconlabs.bledemo.features.firmware_browser.domain.FirmwareSelection
+        val strings = com.siliconlabs.bledemo.features.firmware_browser.domain.UiStrings
+        if (selection.isSelected()) {
+            binding.deviceFirmwareSelectionBar.visibility = View.VISIBLE
+            val cardLabel = when (selection.cardType) {
+                com.siliconlabs.bledemo.features.firmware_browser.domain.CardType.ANTENNA -> strings.antenna
+                com.siliconlabs.bledemo.features.firmware_browser.domain.CardType.POWER -> strings.power
+                else -> ""
+            }
+            binding.tvDeviceSelectedProduct.text = "${selection.productName} — $cardLabel"
+            binding.tvDeviceSelectedFirmware.text = selection.fileName
         }
     }
 

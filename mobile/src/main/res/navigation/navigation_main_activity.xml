@@ -17,16 +17,6 @@
         android:label="ConfigureFragment"
         tools:layout="@layout/fragment_configure"/>
     <fragment
-        android:id="@+id/testFragment"
-        android:name="com.siliconlabs.bledemo.home_screen.fragments.TestFragment"
-        android:label="TestFragment"
-        tools:layout="@layout/fragment_test"/>
-    <fragment
-        android:id="@+id/demoFragment"
-        android:name="com.siliconlabs.bledemo.home_screen.fragments.DemoFragment"
-        android:label="DemoFragment"
-        tools:layout="@layout/fragment_demo"/>
-    <fragment
         android:id="@+id/settingsFragment"
         android:name="com.siliconlabs.bledemo.home_screen.fragments.SettingsFragment"
         android:label="SettingsFragment"
