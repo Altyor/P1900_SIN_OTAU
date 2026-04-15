@@ -1608,18 +1608,16 @@ class DeviceServicesActivity : BaseActivity() {
 
     private fun updateFirmwareVersionDisplay() {
         runOnUiThread {
+            val validation = selectedValidation
+
             // Antenna version display
             firmwareVersionAntenna?.let { versionAntenna ->
                 binding.tvFirmwareVersionAntenna.apply {
                     text = versionAntenna
                     visibility = View.VISIBLE
-                    // Check antenna version based on model number (including _PRO variants)
-                    val isCorrectAntennaVersion = when (modelNumber) {
-                        "SIN-4-2-20", "SIN-4-2-20_PRO" -> versionAntenna == "3.13.0"
-                        "SIN-4-RS-20", "SIN-4-RS-20_PRO" -> versionAntenna == "3.12.0"
-                        else -> false
-                    }
-                    val backgroundColor = if (isCorrectAntennaVersion) {
+                    val expectedVersion = validation?.antennaVersion
+                    val isCorrect = expectedVersion != null && versionAntenna == expectedVersion
+                    val backgroundColor = if (isCorrect) {
                         ContextCompat.getColor(this@DeviceServicesActivity, R.color.silabs_green)
                     } else {
                         ContextCompat.getColor(this@DeviceServicesActivity, R.color.silabs_red)
@@ -1628,12 +1626,14 @@ class DeviceServicesActivity : BaseActivity() {
                 }
             }
 
-            // Power version display (same for both models)
+            // Power version display
             firmwareVersionPower?.let { versionPower ->
                 binding.tvFirmwareVersionPower.apply {
                     text = versionPower
                     visibility = View.VISIBLE
-                    val backgroundColor = if (versionPower == "3.1.5") {
+                    val expectedVersion = validation?.powerVersion
+                    val isCorrect = expectedVersion != null && versionPower == expectedVersion
+                    val backgroundColor = if (isCorrect) {
                         ContextCompat.getColor(this@DeviceServicesActivity, R.color.silabs_green)
                     } else {
                         ContextCompat.getColor(this@DeviceServicesActivity, R.color.silabs_red)
@@ -1655,8 +1655,8 @@ class DeviceServicesActivity : BaseActivity() {
                 binding.tvModelNumber.apply {
                     text = model
                     visibility = View.VISIBLE
-                    // Accept only SIN-4-2-20 and SIN-4-RS-20 as valid models
-                    val isValidModel = (model == "SIN-4-2-20" || model == "SIN-4-RS-20")
+                    val validation = selectedValidation
+                    val isValidModel = validation?.modelNumbers?.contains(model) ?: false
                     val backgroundColor = if (isValidModel) {
                         ContextCompat.getColor(this@DeviceServicesActivity, R.color.silabs_green)
                     } else {
@@ -1781,6 +1781,9 @@ class DeviceServicesActivity : BaseActivity() {
         // Global OTA file path that persists for the app session
         var globalOtaFilePath: String = ""
         var globalOtaFileName: String = ""
+
+        // Validation config from SFTP server config.ini
+        var selectedValidation: com.siliconlabs.bledemo.features.firmware_browser.domain.FirmwareValidation? = null
 
         fun startActivity(context: Context, device: BluetoothDevice) {
             Intent(context, DeviceServicesActivity::class.java).apply {

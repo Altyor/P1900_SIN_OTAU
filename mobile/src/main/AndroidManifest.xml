@@ -51,6 +51,11 @@
         tools:replace="android:allowBackup"
         tools:targetApi="tiramisu">
         <activity
+            android:name=".features.firmware_browser.presentation.FirmwareBrowserActivity"
+            android:screenOrientation="sensorPortrait"
+            android:theme="@style/MainAppTheme.NoActionBar"
+            tools:ignore="DiscouragedApi" />
+        <activity
             android:name=".features.demo.energyharvesting.EnergyHarvestingActivity"
             android:exported="false" />
         <!-- MqttService -->

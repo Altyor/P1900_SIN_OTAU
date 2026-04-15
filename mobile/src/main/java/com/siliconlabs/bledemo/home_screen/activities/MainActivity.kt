@@ -8,16 +8,12 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
-import android.net.Uri
 import android.os.Build
 import android.os.Bundle
-import android.os.Environment
-import android.provider.DocumentsContract
 import android.view.*
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.RequiresApi
 import androidx.core.content.ContextCompat
-import androidx.core.view.marginTop
-import androidx.fragment.app.FragmentContainerView
 import androidx.lifecycle.ViewModelProvider
 import androidx.localbroadcastmanager.content.LocalBroadcastManager
 import androidx.navigation.fragment.NavHostFragment
@@ -26,14 +22,13 @@ import com.siliconlabs.bledemo.base.activities.BaseActivity
 import com.siliconlabs.bledemo.bluetooth.services.BluetoothService
 import com.siliconlabs.bledemo.R
 import com.siliconlabs.bledemo.databinding.ActivityMainBinding
+import com.siliconlabs.bledemo.features.firmware_browser.presentation.FirmwareBrowserActivity
 import com.siliconlabs.bledemo.home_screen.dialogs.PermissionsDialog
 import com.siliconlabs.bledemo.home_screen.viewmodels.MainActivityViewModel
 import com.siliconlabs.bledemo.home_screen.views.HidableBottomNavigationView
 import com.siliconlabs.bledemo.utils.AppUtil
 import com.siliconlabs.bledemo.utils.CustomToastManager
-import com.siliconlabs.bledemo.features.scan.browser.activities.DeviceServicesActivity
 import dagger.hilt.android.AndroidEntryPoint
-import java.io.*
 
 
 @AndroidEntryPoint
@@ -46,8 +41,15 @@ open class MainActivity : BaseActivity(),
     var bluetoothService: BluetoothService? = null
         private set
 
-    // Store OTA file URI in memory for current session only
-    private var otaFileUri: Uri? = null
+    private val firmwareBrowserLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            CustomToastManager.show(this, "Firmware selected and ready for OTA")
+        } else {
+            CustomToastManager.show(this, "No firmware selected")
+        }
+    }
 
     private val neededPermissions = mutableListOf(
             Manifest.permission.ACCESS_FINE_LOCATION,
@@ -159,8 +161,8 @@ open class MainActivity : BaseActivity(),
         observeChanges()
         viewModel.setIsSetupFinished(isSetupFinished = true)
 
-        // Always request OTA file on app startup
-        openOtaFilePicker()
+        // Launch firmware browser on app startup
+        launchFirmwareBrowser()
     }
 
     private fun observeChanges() {
@@ -172,10 +174,6 @@ open class MainActivity : BaseActivity(),
 
     fun getMainNavigation(): HidableBottomNavigationView? {
         return _binding.mainNavigation
-    }
-
-    fun getOtaFileUri(): Uri? {
-        return otaFileUri
     }
 
     override fun onBluetoothStateChanged(isOn: Boolean) {
@@ -230,121 +228,9 @@ open class MainActivity : BaseActivity(),
         }
     }
 
-    private fun openOtaFilePicker() {
-        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
-            addCategory(Intent.CATEGORY_OPENABLE)
-            type = "*/*"
-            putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("application/octet-stream", "*/*"))
-
-            // Set initial directory to "Production" folder in internal storage
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                val productionFolderUri = DocumentsContract.buildDocumentUri(
-                    "com.android.externalstorage.documents",
-                    "primary:Production"
-                )
-                putExtra(DocumentsContract.EXTRA_INITIAL_URI, productionFolderUri)
-            }
-        }
-        startActivityForResult(intent, OTA_FILE_PICKER_REQUEST_CODE)
-    }
-
-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
-        super.onActivityResult(requestCode, resultCode, data)
-
-        if (requestCode == OTA_FILE_PICKER_REQUEST_CODE) {
-            when (resultCode) {
-                Activity.RESULT_OK -> {
-                    data?.data?.let { uri ->
-                        // Check if it's a .gbl or .zigbee file
-                        val fileName = getFileNameFromUri(uri)
-                        android.util.Log.d("MainActivity", "File selected: $fileName, URI: $uri")
-
-                        val isValidFile = fileName?.let { name ->
-                            name.endsWith(".gbl", ignoreCase = true) ||
-                            name.endsWith(".zigbee", ignoreCase = true)
-                        } ?: false
-
-                        if (isValidFile) {
-                            // Store URI only in memory for current session
-                            otaFileUri = uri
-
-                            // Grant persistable URI permission
-                            try {
-                                contentResolver.takePersistableUriPermission(
-                                    uri,
-                                    Intent.FLAG_GRANT_READ_URI_PERMISSION
-                                )
-                            } catch (e: Exception) {
-                                android.util.Log.e("MainActivity", "Error granting URI permission", e)
-                            }
-
-                            // Prepare the OTA file and set global variables for DeviceServicesActivity
-                            prepareOtaFileForGlobalUse(uri, fileName!!)
-
-                            CustomToastManager.show(this, "Archivo OTA seleccionado: $fileName")
-                        } else {
-                            android.util.Log.w("MainActivity", "File is not .gbl or .zigbee: $fileName")
-                            CustomToastManager.show(this, "Por favor seleccione un archivo .gbl o .zigbee. Archivo seleccionado: $fileName")
-                            // Show file picker again
-                            openOtaFilePicker()
-                        }
-                    } ?: run {
-                        android.util.Log.e("MainActivity", "URI is null")
-                        CustomToastManager.show(this, "Error: No se pudo obtener el archivo")
-                        openOtaFilePicker()
-                    }
-                }
-                Activity.RESULT_CANCELED -> {
-                    android.util.Log.d("MainActivity", "File selection canceled")
-                    CustomToastManager.show(this, "Selección cancelada. Debe seleccionar un archivo .gbl para continuar")
-                    // Don't reopen picker, let user continue without file
-                }
-                else -> {
-                    android.util.Log.w("MainActivity", "Unexpected result code: $resultCode")
-                }
-            }
-        }
-    }
-
-    private fun prepareOtaFileForGlobalUse(uri: Uri, fileName: String) {
-        try {
-            val inStream = contentResolver.openInputStream(uri)
-            if (inStream == null) {
-                CustomToastManager.show(this, "Error al abrir el archivo")
-                return
-            }
-
-            val file = File(cacheDir, fileName)
-            val output: OutputStream = FileOutputStream(file)
-            val buffer = ByteArray(4 * 1024)
-            var read: Int
-
-            while ((inStream.read(buffer).also { read = it }) != -1) {
-                output.write(buffer, 0, read)
-            }
-
-            output.flush()
-            inStream.close()
-            output.close()
-
-            // Set global variables in DeviceServicesActivity companion object
-            DeviceServicesActivity.globalOtaFilePath = file.absolutePath
-            DeviceServicesActivity.globalOtaFileName = fileName
-
-        } catch (e: IOException) {
-            e.printStackTrace()
-            CustomToastManager.show(this, "Error al preparar archivo: ${e.message}")
-        }
-    }
-
-    private fun getFileNameFromUri(uri: Uri): String? {
-        var fileName: String? = null
-        contentResolver.query(uri, null, null, null, null)?.use { cursor ->
-            val nameIndex = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
-            cursor.moveToFirst()
-            fileName = cursor.getString(nameIndex)
-        }
-        return fileName
+    private fun launchFirmwareBrowser() {
+        val intent = Intent(this, FirmwareBrowserActivity::class.java)
+        firmwareBrowserLauncher.launch(intent)
     }
 
     override fun onDestroy() {
@@ -355,8 +241,6 @@ open class MainActivity : BaseActivity(),
 
     companion object {
         private const val PERMISSIONS_REQUEST_CODE = 400
-        private const val OTA_FILE_PICKER_REQUEST_CODE = 401
-        // private const val IMPORT_EXPORT_CODE_VERSION = 20
         const val ACTION_SHOW_CUSTOM_TOAST = "com.example.ACTION_SHOW_CUSTOM_TOAST"
         const val EXTRA_TOAST_MESSAGE = "com.example.EXTRA_TOAST_MESSAGE"
     }

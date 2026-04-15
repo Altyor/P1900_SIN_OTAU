@@ -263,4 +263,8 @@ dependencies {
 
     implementation("com.pranavpandey.android:dynamic-toasts:4.3.0")
 
+    // SFTP client for firmware browser
+    implementation("com.hierynomus:sshj:0.39.0")
+    implementation("org.bouncycastle:bcprov-jdk18on:1.78.1")
+
 }
