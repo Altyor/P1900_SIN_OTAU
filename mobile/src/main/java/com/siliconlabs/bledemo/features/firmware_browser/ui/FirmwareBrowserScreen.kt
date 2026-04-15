@@ -36,6 +36,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
+import coil.compose.AsyncImage
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -160,14 +162,30 @@ private fun ProductListContent(
                 Card(
                     onClick = { onProductSelected(product) },
                     modifier = Modifier.fillMaxWidth(),
-                    elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+                    elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
                 ) {
-                    Text(
-                        text = product.name,
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold,
-                        modifier = Modifier.padding(20.dp)
-                    )
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        product.imagePath?.let { path ->
+                            AsyncImage(
+                                model = java.io.File(path),
+                                contentDescription = product.name,
+                                modifier = Modifier
+                                    .fillMaxWidth(0.85f)
+                                    .height(260.dp)
+                                    .padding(top = 16.dp),
+                                contentScale = ContentScale.Fit
+                            )
+                        }
+                        Text(
+                            text = product.name,
+                            fontSize = 28.sp,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(12.dp)
+                        )
+                    }
                 }
             }
         }

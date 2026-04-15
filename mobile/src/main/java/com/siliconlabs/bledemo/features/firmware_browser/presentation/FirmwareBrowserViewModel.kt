@@ -25,11 +25,12 @@ class FirmwareBrowserViewModel @Inject constructor(
 
     private var selectedProduct: ProductInfo? = null
     private var selectedPn: PnInfo? = null
+    private var lastPnList: List<PnInfo>? = null
 
     fun loadProducts() {
         _uiState.value = FirmwareBrowserUiState.Loading
         viewModelScope.launch {
-            sftpRepository.listProducts()
+            sftpRepository.listProducts(app.cacheDir)
                 .onSuccess { products ->
                     if (products.isEmpty()) {
                         _uiState.value = FirmwareBrowserUiState.Error(
@@ -53,6 +54,7 @@ class FirmwareBrowserViewModel @Inject constructor(
         viewModelScope.launch {
             sftpRepository.listPns(product)
                 .onSuccess { pns ->
+                    lastPnList = pns
                     when {
                         pns.isEmpty() -> _uiState.value = FirmwareBrowserUiState.Error(
                             "No part numbers found for ${product.name}."
@@ -130,9 +132,14 @@ class FirmwareBrowserViewModel @Inject constructor(
         when (currentState) {
             is FirmwareBrowserUiState.PnSelection -> loadProducts()
             is FirmwareBrowserUiState.CardSelection -> {
+                // If there was a PN selection step, go back to it; otherwise go to products
                 val product = selectedProduct
-                if (product != null) selectProduct(product)
-                else loadProducts()
+                val lastPns = lastPnList
+                if (product != null && lastPns != null && lastPns.size > 1) {
+                    _uiState.value = FirmwareBrowserUiState.PnSelection(product, lastPns)
+                } else {
+                    loadProducts()
+                }
             }
             is FirmwareBrowserUiState.Error -> loadProducts()
             else -> { /* no-op for Loading, Downloading, Ready, ProductList */ }

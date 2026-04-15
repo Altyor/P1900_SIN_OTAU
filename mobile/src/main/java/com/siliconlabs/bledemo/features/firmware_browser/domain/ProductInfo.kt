@@ -1,3 +1,6 @@
 package com.siliconlabs.bledemo.features.firmware_browser.domain
 
-data class ProductInfo(val name: String)
+data class ProductInfo(
+    val name: String,
+    val imagePath: String? = null
+)
