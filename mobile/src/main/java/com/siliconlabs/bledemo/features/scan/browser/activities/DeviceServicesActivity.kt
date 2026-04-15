@@ -65,6 +65,8 @@ class DeviceServicesActivity : BaseActivity() {
     private lateinit var handler: Handler
 
     private var viewState = ViewState.IDLE
+    private var otaCompleted = false
+    private var initialReadDone = false
     private var mtuReadType = MtuReadType.VIEW_INITIALIZATION
     private var isLogFragmentOn = false
 
@@ -125,13 +127,7 @@ class DeviceServicesActivity : BaseActivity() {
     lateinit var scanFragmentViewModel: ScanFragmentViewModel
 
     private val hideFabOnScrollChangeListener =
-        OnScrollChangeListener { v, scrollX, scrollY, oldScrollX, oldScrollY ->
-            if (scrollY > oldScrollY) {
-                binding.btnDisconnect.hide()
-            } else {
-                binding.btnDisconnect.show()
-            }
-        }
+        OnScrollChangeListener { _, _, _, _, _ -> }
 
     private val remoteServicesFragment = RemoteServicesFragment(hideFabOnScrollChangeListener)
     private val localServicesFragment = LocalServicesFragment()
@@ -298,16 +294,24 @@ class DeviceServicesActivity : BaseActivity() {
                         // Keep old behavior for title (show antenna version)
                         firmwareVersion = firmwareVersionAntenna
 
+                        // Start periodic refresh only after first successful read
+                        if (!initialReadDone) {
+                            initialReadDone = true
+                            startFirmwareVersionRefresh()
+                        }
+
                         runOnUiThread {
                             supportActionBar?.title = getDeviceName()
                             updateFirmwareVersionDisplay()
                         }
 
-                        // After reading firmware version, read model number
-                        getModelNumberCharacteristic()?.let { modelCharacteristic ->
-                            Log.d("OTA_DEBUG", "Reading model number after firmware version")
-                            gatt.readCharacteristic(modelCharacteristic)
-                        }
+                        // Read model number after a delay to allow bonding to complete
+                        handler.postDelayed({
+                            getModelNumberCharacteristic()?.let { modelCharacteristic ->
+                                Log.d("OTA_DEBUG", "Reading model number after firmware version")
+                                bluetoothGatt?.readCharacteristic(modelCharacteristic)
+                            }
+                        }, 1500)
                     }
                 }
                 UuidConsts.MODEL_NUMBER -> {
@@ -477,7 +481,7 @@ class DeviceServicesActivity : BaseActivity() {
                             mtuReadType = MtuReadType.VIEW_INITIALIZATION
                             gatt.requestMtu(INITIALIZATION_MTU_VALUE)
 
-                            // Try to read firmware version
+                            // Read firmware version
                             getFirmwareVersionCharacteristic()?.let { characteristic ->
                                 Log.d("OTA_DEBUG", "Reading firmware version during normal init")
                                 gatt.readCharacteristic(characteristic)
@@ -495,6 +499,7 @@ class DeviceServicesActivity : BaseActivity() {
 
                     ViewState.REBOOTING_NEW_FIRMWARE -> {
                         Log.d("OTA_DEBUG", "Device rebooted with new firmware, reading device name")
+                        otaCompleted = true
                         bluetoothGatt?.readCharacteristic(getDeviceNameCharacteristic())
                     }
 
@@ -640,6 +645,7 @@ class DeviceServicesActivity : BaseActivity() {
 
         showCharacteristicLoadingAnimation(getString(R.string.debug_mode_device_loading_gatt_info))
         updateDeviceFirmwareSelectionBar()
+        setupOperatorView()
         bindBluetoothService()
         scanFragmentViewModel = ScanFragmentViewModel(this@DeviceServicesActivity)
     }
@@ -777,13 +783,11 @@ class DeviceServicesActivity : BaseActivity() {
     }
 
     private fun registerReceivers() {
-
         registerReceiver(bluetoothReceiver, IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED))
         registerReceiver(
             bondStateChangeListener,
             IntentFilter(BluetoothDevice.ACTION_BOND_STATE_CHANGED)
         )
-
     }
 
     private fun displayBondState(newState: Int? = null) {
@@ -857,9 +861,6 @@ class DeviceServicesActivity : BaseActivity() {
             if (!isGattConnected()) {
                 showMessage(R.string.toast_debug_connection_failed)
                 finish()
-            } else {
-                // Start periodic firmware version refresh when connected
-                startFirmwareVersionRefresh()
             }
         }
     }
@@ -1648,6 +1649,8 @@ class DeviceServicesActivity : BaseActivity() {
             if (firmwareVersionAntenna != null || firmwareVersionPower != null) {
                 binding.firmwareVersionsContainer.visibility = View.VISIBLE
             }
+
+            updateOperatorFirmware()
         }
     }
 
@@ -1655,7 +1658,8 @@ class DeviceServicesActivity : BaseActivity() {
         runOnUiThread {
             modelNumber?.let { model ->
                 val validation = selectedValidation
-                val isValidModel = validation?.modelNumbers?.contains(model) ?: false
+                val expectedModel = if (otaCompleted) validation?.postModel else validation?.preModel
+                val isValidModel = expectedModel != null && model == expectedModel
 
                 binding.tvModelNumber.apply {
                     text = model
@@ -1668,12 +1672,13 @@ class DeviceServicesActivity : BaseActivity() {
                     setBackgroundColor(backgroundColor)
                 }
 
-                if (!isValidModel && validation != null) {
-                    showModelMismatchDialog(model, validation.modelNumbers)
+                if (!isValidModel && validation != null && !otaCompleted) {
+                    showModelMismatchDialog(model, listOf(expectedModel ?: ""))
                 }
 
+                updateOperatorModel()
+
                 // Update firmware display in case it was already read
-                // (to apply correct color based on model)
                 if (firmwareVersionAntenna != null || firmwareVersionPower != null) {
                     updateFirmwareVersionDisplay()
                 }
@@ -1682,9 +1687,7 @@ class DeviceServicesActivity : BaseActivity() {
     }
 
     private fun showModelMismatchDialog(deviceModel: String, expectedModels: List<String>) {
-        val selection = com.siliconlabs.bledemo.features.firmware_browser.domain.FirmwareSelection
-        val expected = if (selection.productName.isNotEmpty()) selection.productName
-            else expectedModels.firstOrNull() ?: "NULL"
+        val expected = expectedModels.firstOrNull() ?: "NULL"
         val strings = com.siliconlabs.bledemo.features.firmware_browser.domain.UiStrings
         androidx.appcompat.app.AlertDialog.Builder(this)
             .setTitle(strings.modelMismatchTitle)
@@ -1696,6 +1699,55 @@ class DeviceServicesActivity : BaseActivity() {
                 finish()
             }
             .show()
+    }
+
+    private fun setupOperatorView() {
+        binding.btnStartOta.setOnClickListener {
+            if (isUiCreated) checkForOtaCharacteristic()
+        }
+    }
+
+    private fun updateOperatorModel() {
+        runOnUiThread {
+            val model = modelNumber ?: "—"
+            binding.tvOperatorModel.text = model
+            val validation = selectedValidation
+            val expectedModel = if (otaCompleted) validation?.postModel else validation?.preModel
+            val isValid = expectedModel != null && model == expectedModel
+            val drawable = if (isValid) R.drawable.ic_circle_green else R.drawable.ic_circle_red
+            binding.tvOperatorModel.setCompoundDrawablesRelativeWithIntrinsicBounds(
+                0, 0, drawable, 0
+            )
+            binding.tvOperatorModel.compoundDrawablePadding = 16
+        }
+    }
+
+    private fun updateOperatorFirmware() {
+        runOnUiThread {
+            val validation = selectedValidation
+
+            firmwareVersionAntenna?.let { version ->
+                binding.tvOperatorAntenna.text = version
+                val expected = validation?.antennaVersion
+                val drawable = if (expected != null && version == expected)
+                    R.drawable.ic_circle_green else R.drawable.ic_circle_red
+                binding.tvOperatorAntenna.setCompoundDrawablesRelativeWithIntrinsicBounds(
+                    0, 0, drawable, 0
+                )
+                binding.tvOperatorAntenna.compoundDrawablePadding = 16
+            }
+
+            firmwareVersionPower?.let { version ->
+                binding.tvOperatorPower.text = version
+                val expected = validation?.powerVersion
+                val drawable = if (expected != null && version == expected)
+                    R.drawable.ic_circle_green else R.drawable.ic_circle_red
+                binding.tvOperatorPower.setCompoundDrawablesRelativeWithIntrinsicBounds(
+                    0, 0, drawable, 0
+                )
+                binding.tvOperatorPower.compoundDrawablePadding = 16
+            }
+        }
     }
 
     private fun updateDeviceFirmwareSelectionBar() {

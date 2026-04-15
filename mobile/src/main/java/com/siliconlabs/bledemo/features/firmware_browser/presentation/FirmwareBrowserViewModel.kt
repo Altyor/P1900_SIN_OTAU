@@ -63,10 +63,7 @@ class FirmwareBrowserViewModel @Inject constructor(
                         )
                         pns.size == 1 -> {
                             selectedPn = pns.first()
-                            _uiState.value = FirmwareBrowserUiState.CardSelection(
-                                product = product,
-                                pn = pns.first()
-                            )
+                            showCardSelection(product, pns.first())
                         }
                         else -> _uiState.value = FirmwareBrowserUiState.PnSelection(
                             product = product,
@@ -85,7 +82,23 @@ class FirmwareBrowserViewModel @Inject constructor(
     fun selectPn(pn: PnInfo) {
         val product = selectedProduct ?: return
         selectedPn = pn
-        _uiState.value = FirmwareBrowserUiState.CardSelection(product = product, pn = pn)
+        viewModelScope.launch { showCardSelection(product, pn) }
+    }
+
+    private suspend fun showCardSelection(product: ProductInfo, pn: PnInfo) {
+        val (hasAntenna, hasPower) = sftpRepository.listAvailableCards(product, pn)
+            .getOrElse {
+                _uiState.value = FirmwareBrowserUiState.Error(
+                    "${UiStrings.failedToReadConfig} : ${it.message}"
+                )
+                return
+            }
+        _uiState.value = FirmwareBrowserUiState.CardSelection(
+            product = product,
+            pn = pn,
+            hasAntenna = hasAntenna,
+            hasPower = hasPower
+        )
     }
 
     fun selectCard(cardType: CardType) {

@@ -14,7 +14,9 @@ sealed class FirmwareBrowserUiState {
     ) : FirmwareBrowserUiState()
     data class CardSelection(
         val product: ProductInfo,
-        val pn: PnInfo
+        val pn: PnInfo,
+        val hasAntenna: Boolean = true,
+        val hasPower: Boolean = true
     ) : FirmwareBrowserUiState()
     data class Downloading(val fileName: String) : FirmwareBrowserUiState()
     data class Ready(

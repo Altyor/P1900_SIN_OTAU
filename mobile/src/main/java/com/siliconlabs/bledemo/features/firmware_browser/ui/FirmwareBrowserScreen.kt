@@ -105,6 +105,8 @@ fun FirmwareBrowserScreen(
                 is FirmwareBrowserUiState.CardSelection -> CardSelectionContent(
                     product = state.product,
                     pn = state.pn,
+                    hasAntenna = state.hasAntenna,
+                    hasPower = state.hasPower,
                     onCardSelected = { viewModel.selectCard(it) }
                 )
                 is FirmwareBrowserUiState.Downloading -> DownloadingContent(
@@ -235,6 +237,8 @@ private fun PnSelectionContent(
 private fun CardSelectionContent(
     product: ProductInfo,
     pn: PnInfo,
+    hasAntenna: Boolean,
+    hasPower: Boolean,
     onCardSelected: (CardType) -> Unit
 ) {
     Column(
@@ -265,13 +269,14 @@ private fun CardSelectionContent(
             horizontalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             Card(
-                onClick = { onCardSelected(CardType.ANTENNA) },
+                onClick = { if (hasAntenna) onCardSelected(CardType.ANTENNA) },
                 modifier = Modifier
                     .weight(1f)
                     .height(160.dp),
-                elevation = CardDefaults.cardElevation(defaultElevation = 4.dp),
+                elevation = CardDefaults.cardElevation(defaultElevation = if (hasAntenna) 4.dp else 0.dp),
                 colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.primaryContainer
+                    containerColor = if (hasAntenna) MaterialTheme.colorScheme.primaryContainer
+                        else Color(0xFFE0E0E0)
                 )
             ) {
                 Column(
@@ -281,30 +286,33 @@ private fun CardSelectionContent(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.Center
                 ) {
+                    val tint = if (hasAntenna) MaterialTheme.colorScheme.onPrimaryContainer
+                        else Color(0xFF9E9E9E)
                     Icon(
                         Icons.Default.SettingsInputAntenna,
                         contentDescription = null,
                         modifier = Modifier.size(48.dp),
-                        tint = MaterialTheme.colorScheme.onPrimaryContainer
+                        tint = tint
                     )
                     Spacer(modifier = Modifier.height(12.dp))
                     Text(
                         text = UiStrings.antenna,
                         fontSize = 18.sp,
                         fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onPrimaryContainer
+                        color = tint
                     )
                 }
             }
 
             Card(
-                onClick = { onCardSelected(CardType.POWER) },
+                onClick = { if (hasPower) onCardSelected(CardType.POWER) },
                 modifier = Modifier
                     .weight(1f)
                     .height(160.dp),
-                elevation = CardDefaults.cardElevation(defaultElevation = 4.dp),
+                elevation = CardDefaults.cardElevation(defaultElevation = if (hasPower) 4.dp else 0.dp),
                 colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.secondaryContainer
+                    containerColor = if (hasPower) MaterialTheme.colorScheme.secondaryContainer
+                        else Color(0xFFE0E0E0)
                 )
             ) {
                 Column(
@@ -314,18 +322,20 @@ private fun CardSelectionContent(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.Center
                 ) {
+                    val tint = if (hasPower) MaterialTheme.colorScheme.onSecondaryContainer
+                        else Color(0xFF9E9E9E)
                     Icon(
                         Icons.Default.Memory,
                         contentDescription = null,
                         modifier = Modifier.size(48.dp),
-                        tint = MaterialTheme.colorScheme.onSecondaryContainer
+                        tint = tint
                     )
                     Spacer(modifier = Modifier.height(12.dp))
                     Text(
                         text = UiStrings.power,
                         fontSize = 18.sp,
                         fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onSecondaryContainer
+                        color = tint
                     )
                 }
             }

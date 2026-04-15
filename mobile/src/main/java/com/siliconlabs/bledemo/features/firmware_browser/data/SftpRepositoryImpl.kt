@@ -117,6 +117,25 @@ class SftpRepositoryImpl : SftpRepository {
             }
         }
 
+    override suspend fun listAvailableCards(
+        product: ProductInfo,
+        pn: PnInfo
+    ): Result<Pair<Boolean, Boolean>> = withContext(Dispatchers.IO) {
+        runCatching {
+            val sftp = getOrCreateSftp()
+            val fwPath = "${SftpConfig.ROOT_DIR}/${product.name}/${pn.name}/FW"
+            val dirs = sftp.ls(fwPath)
+                .filter { it.isDirectory }
+                .map { it.name }
+            val hasAntenna = dirs.any { it.equals("Antenna", ignoreCase = true) }
+            val hasPower = dirs.any { it.equals("Power", ignoreCase = true) }
+            Pair(hasAntenna, hasPower)
+        }.onFailure {
+            Log.e(TAG, "Failed to list available cards", it)
+            disconnect()
+        }
+    }
+
     override suspend fun fetchValidation(
         product: ProductInfo,
         pn: PnInfo
@@ -175,7 +194,8 @@ class SftpRepositoryImpl : SftpRepository {
             }
         }
         return FirmwareValidation(
-            modelNumbers = props["model_numbers"]?.split(",")?.map { it.trim() } ?: emptyList(),
+            preModel = props["pre_model"] ?: "",
+            postModel = props["post_model"] ?: "",
             antennaVersion = props["antenna_version"] ?: "",
             powerVersion = props["power_version"] ?: ""
         )
