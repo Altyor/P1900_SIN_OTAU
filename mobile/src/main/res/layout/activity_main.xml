@@ -9,22 +9,37 @@
     <include android:id="@+id/include_layout_edge_to_edge"
         layout="@layout/layout_edge_to_edge" />
 
-    <androidx.fragment.app.FragmentContainerView
-        android:id="@+id/main_fragment"
-        android:name="androidx.navigation.fragment.NavHostFragment"
+    <RelativeLayout
         android:layout_width="match_parent"
         android:layout_height="0dp"
-        android:layout_weight="1"
-        app:navGraph="@navigation/navigation_main_activity"
-        app:defaultNavHost="true"
-        tools:layout="@layout/fragment_scan"/>
+        android:layout_weight="1">
+
+        <androidx.fragment.app.FragmentContainerView
+            android:id="@+id/main_fragment"
+            android:name="androidx.navigation.fragment.NavHostFragment"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            app:navGraph="@navigation/navigation_main_activity"
+            app:defaultNavHost="true"
+            tools:layout="@layout/fragment_scan"/>
+
+        <com.siliconlabs.bledemo.common.views.MainActionButton
+            android:id="@+id/fab_firmware"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_alignParentStart="true"
+            android:layout_alignParentBottom="true"
+            android:layout_margin="@dimen/extended_fab_margin"
+            android:text="Change Product"
+            app:icon="@android:drawable/stat_sys_download" />
+
+    </RelativeLayout>
 
     <com.siliconlabs.bledemo.home_screen.views.HidableBottomNavigationView
         android:id="@+id/main_navigation"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         app:menu="@menu/bottom_nav_main"
-        app:labelVisibilityMode="labeled" >
-    </com.siliconlabs.bledemo.home_screen.views.HidableBottomNavigationView>
+        app:labelVisibilityMode="labeled" />
 
 </LinearLayout>

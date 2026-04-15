@@ -1,6 +1,5 @@
 package com.siliconlabs.bledemo.features.firmware_browser.ui
 
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -159,9 +158,8 @@ private fun ProductListContent(
         ) {
             items(products) { product ->
                 Card(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { onProductSelected(product) },
+                    onClick = { onProductSelected(product) },
+                    modifier = Modifier.fillMaxWidth(),
                     elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
                 ) {
                     Text(
@@ -198,9 +196,8 @@ private fun PnSelectionContent(
         ) {
             items(pns) { pn ->
                 Card(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { onPnSelected(pn) },
+                    onClick = { onPnSelected(pn) },
+                    modifier = Modifier.fillMaxWidth(),
                     elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
                 ) {
                     Text(
@@ -249,10 +246,10 @@ private fun CardSelectionContent(
             horizontalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             Card(
+                onClick = { onCardSelected(CardType.ANTENNA) },
                 modifier = Modifier
                     .weight(1f)
-                    .height(160.dp)
-                    .clickable { onCardSelected(CardType.ANTENNA) },
+                    .height(160.dp),
                 elevation = CardDefaults.cardElevation(defaultElevation = 4.dp),
                 colors = CardDefaults.cardColors(
                     containerColor = MaterialTheme.colorScheme.primaryContainer
@@ -282,10 +279,10 @@ private fun CardSelectionContent(
             }
 
             Card(
+                onClick = { onCardSelected(CardType.POWER) },
                 modifier = Modifier
                     .weight(1f)
-                    .height(160.dp)
-                    .clickable { onCardSelected(CardType.POWER) },
+                    .height(160.dp),
                 elevation = CardDefaults.cardElevation(defaultElevation = 4.dp),
                 colors = CardDefaults.cardColors(
                     containerColor = MaterialTheme.colorScheme.secondaryContainer

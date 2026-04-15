@@ -41,6 +41,8 @@ open class MainActivity : BaseActivity(),
     var bluetoothService: BluetoothService? = null
         private set
 
+    private var firmwareBrowserLaunched = false
+
     private val firmwareBrowserLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
@@ -87,7 +89,10 @@ open class MainActivity : BaseActivity(),
         handlePermissions()
         setupMainNavigationListener()
 
-
+        _binding.fabFirmware.setOnClickListener {
+            firmwareBrowserLaunched = false
+            launchFirmwareBrowser()
+        }
 
         // Register the receiver
         val filter = IntentFilter(ACTION_SHOW_CUSTOM_TOAST)
@@ -229,6 +234,8 @@ open class MainActivity : BaseActivity(),
     }
 
     private fun launchFirmwareBrowser() {
+        if (firmwareBrowserLaunched) return
+        firmwareBrowserLaunched = true
         val intent = Intent(this, FirmwareBrowserActivity::class.java)
         firmwareBrowserLauncher.launch(intent)
     }
