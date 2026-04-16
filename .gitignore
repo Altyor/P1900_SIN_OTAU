@@ -11,3 +11,4 @@ mobile/Builds/
 build/
 *.apk
 *.idsig
+~$*
