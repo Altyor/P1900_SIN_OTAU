@@ -41,7 +41,7 @@
                 android:textColor="#CCFFFFFF"
                 android:textSize="16sp"
                 android:ellipsize="middle"
-                android:singleLine="true"
+                android:maxLines="2"
                 android:paddingTop="4dp"
                 tools:text="128b-0002-030D-700_nodon_sin_2_fw_efr32_V030D.zigbee" />
 

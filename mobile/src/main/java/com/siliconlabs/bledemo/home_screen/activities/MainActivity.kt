@@ -250,10 +250,15 @@ open class MainActivity : BaseActivity(),
             val cardLabel = when (selection.cardType) {
                 com.siliconlabs.bledemo.features.firmware_browser.domain.CardType.ANTENNA -> strings.antenna
                 com.siliconlabs.bledemo.features.firmware_browser.domain.CardType.POWER -> strings.power
+                com.siliconlabs.bledemo.features.firmware_browser.domain.CardType.BOTH -> strings.both
                 else -> ""
             }
-            _binding.tvSelectedProduct.text = "${selection.productName} — $cardLabel"
-            _binding.tvSelectedFirmware.text = selection.fileName
+            _binding.tvSelectedProduct.text = "${selection.productName} — ${selection.pnName} — $cardLabel"
+            if (selection.cardType == com.siliconlabs.bledemo.features.firmware_browser.domain.CardType.BOTH) {
+                _binding.tvSelectedFirmware.text = "${strings.antenna}: ${selection.fileName}\n${strings.power}: ${selection.secondFileName}"
+            } else {
+                _binding.tvSelectedFirmware.text = selection.fileName
+            }
         } else {
             _binding.firmwareSelectionBar.visibility = View.GONE
         }

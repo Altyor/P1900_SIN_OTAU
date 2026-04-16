@@ -55,7 +55,7 @@
                 android:textColor="#CCFFFFFF"
                 android:textSize="14sp"
                 android:ellipsize="middle"
-                android:singleLine="true"
+                android:maxLines="2"
                 android:paddingTop="2dp" />
 
         </LinearLayout>
@@ -178,11 +178,100 @@
 
                 </LinearLayout>
 
+                <!-- Divider -->
+                <View
+                    android:layout_width="match_parent"
+                    android:layout_height="1dp"
+                    android:background="#E0E0E0"
+                    android:layout_marginTop="20dp" />
+
+                <!-- Status -->
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Statut"
+                    android:textSize="14sp"
+                    android:textColor="#888888"
+                    android:paddingTop="20dp" />
+
+                <TextView
+                    android:id="@+id/tv_operator_status"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:textSize="20sp"
+                    android:textStyle="bold"
+                    android:textColor="@color/silabs_black"
+                    android:paddingTop="4dp"
+                    android:text="Connexion en cours..."
+                    tools:text="Connecté — Pré-OTA" />
+
             </LinearLayout>
 
         </androidx.cardview.widget.CardView>
 
+        <!-- Rotating logo overlay (shown during OTA/reboot) -->
+        <LinearLayout
+            android:id="@+id/ota_waiting_overlay"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            android:orientation="vertical"
+            android:gravity="center"
+            android:visibility="gone">
+
+            <ImageView
+                android:id="@+id/iv_nodon_spinning"
+                android:layout_width="200dp"
+                android:layout_height="200dp"
+                android:src="@drawable/nodon_logo"
+                android:scaleType="fitCenter" />
+
+            <TextView
+                android:id="@+id/tv_ota_heading"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:textSize="28sp"
+                android:textStyle="bold"
+                android:textColor="@color/blue_primary"
+                android:paddingTop="32dp"
+                android:gravity="center"
+                android:text="Mise à jour OTA en cours..." />
+
+            <TextView
+                android:id="@+id/tv_ota_waiting_status"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:textSize="20sp"
+                android:textColor="#888888"
+                android:paddingTop="16dp"
+                android:gravity="center" />
+
+            <TextView
+                android:id="@+id/tv_ota_elapsed_time"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:textSize="20sp"
+                android:textColor="#888888"
+                android:paddingTop="16dp"
+                android:visibility="gone" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btn_ota_retry"
+                android:layout_width="wrap_content"
+                android:layout_height="56dp"
+                android:layout_marginTop="24dp"
+                android:paddingHorizontal="32dp"
+                android:text="Réessayer la mise à jour"
+                android:textSize="18sp"
+                android:textAllCaps="false"
+                app:backgroundTint="@color/blue_primary"
+                app:cornerRadius="12dp"
+                android:visibility="gone" />
+
+        </LinearLayout>
+
         <View
+            android:id="@+id/spacer"
             android:layout_width="0dp"
             android:layout_height="0dp"
             android:layout_weight="1" />

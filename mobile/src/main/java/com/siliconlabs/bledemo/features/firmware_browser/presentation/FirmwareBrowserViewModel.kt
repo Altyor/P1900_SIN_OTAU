@@ -7,7 +7,9 @@ import com.siliconlabs.bledemo.features.firmware_browser.data.SftpRepository
 import com.siliconlabs.bledemo.features.firmware_browser.domain.CardType
 import com.siliconlabs.bledemo.features.firmware_browser.domain.FirmwareSelection
 import com.siliconlabs.bledemo.features.firmware_browser.domain.PnInfo
+import com.siliconlabs.bledemo.features.firmware_browser.domain.SftpConfig
 import com.siliconlabs.bledemo.features.firmware_browser.domain.ProductInfo
+import com.siliconlabs.bledemo.features.firmware_browser.domain.SecretsManager
 import com.siliconlabs.bledemo.features.firmware_browser.domain.UiStrings
 import com.siliconlabs.bledemo.features.scan.browser.activities.DeviceServicesActivity
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -30,6 +32,11 @@ class FirmwareBrowserViewModel @Inject constructor(
     private var lastPnList: List<PnInfo>? = null
 
     fun loadProducts() {
+        SecretsManager.load(app)
+        if (!SftpConfig.isConfigured()) {
+            _uiState.value = FirmwareBrowserUiState.Error(UiStrings.noCredentials)
+            return
+        }
         _uiState.value = FirmwareBrowserUiState.Loading
         viewModelScope.launch {
             sftpRepository.listProducts(app.cacheDir)
@@ -115,28 +122,69 @@ class FirmwareBrowserViewModel @Inject constructor(
                 return@launch
             }
 
-            sftpRepository.downloadFirmware(product, pn, cardType, app.cacheDir)
-                .onSuccess { file ->
-                    DeviceServicesActivity.globalOtaFilePath = file.absolutePath
-                    DeviceServicesActivity.globalOtaFileName = file.name
-                    DeviceServicesActivity.selectedValidation = validation
+            if (cardType == CardType.BOTH) {
+                // Download antenna first
+                val antennaFile = sftpRepository.downloadFirmware(product, pn, CardType.ANTENNA, app.cacheDir)
+                    .getOrElse { e ->
+                        _uiState.value = FirmwareBrowserUiState.Error(
+                            "${UiStrings.failedToDownload} (${UiStrings.antenna}) : ${e.message}"
+                        )
+                        return@launch
+                    }
+                // Download power second
+                val powerFile = sftpRepository.downloadFirmware(product, pn, CardType.POWER, app.cacheDir)
+                    .getOrElse { e ->
+                        _uiState.value = FirmwareBrowserUiState.Error(
+                            "${UiStrings.failedToDownload} (${UiStrings.power}) : ${e.message}"
+                        )
+                        return@launch
+                    }
 
-                    FirmwareSelection.productName = product.name
-                    FirmwareSelection.pnName = pn.name
-                    FirmwareSelection.cardType = cardType
-                    FirmwareSelection.fileName = file.name
+                // Set antenna as the first OTA, power as pending
+                DeviceServicesActivity.globalOtaFilePath = antennaFile.absolutePath
+                DeviceServicesActivity.globalOtaFileName = antennaFile.name
+                DeviceServicesActivity.selectedValidation = validation
 
-                    _uiState.value = FirmwareBrowserUiState.Ready(
-                        filePath = file.absolutePath,
-                        fileName = file.name,
-                        validation = validation
-                    )
-                }
-                .onFailure { e ->
-                    _uiState.value = FirmwareBrowserUiState.Error(
-                        "${UiStrings.failedToDownload} : ${e.message}"
-                    )
-                }
+                FirmwareSelection.productName = product.name
+                FirmwareSelection.pnName = pn.name
+                FirmwareSelection.cardType = cardType
+                FirmwareSelection.fileName = antennaFile.name
+                FirmwareSelection.secondFilePath = powerFile.absolutePath
+                FirmwareSelection.secondFileName = powerFile.name
+                FirmwareSelection.pendingSecondOta = true
+
+                _uiState.value = FirmwareBrowserUiState.Ready(
+                    filePath = antennaFile.absolutePath,
+                    fileName = "${antennaFile.name} + ${powerFile.name}",
+                    validation = validation
+                )
+            } else {
+                sftpRepository.downloadFirmware(product, pn, cardType, app.cacheDir)
+                    .onSuccess { file ->
+                        DeviceServicesActivity.globalOtaFilePath = file.absolutePath
+                        DeviceServicesActivity.globalOtaFileName = file.name
+                        DeviceServicesActivity.selectedValidation = validation
+
+                        FirmwareSelection.productName = product.name
+                        FirmwareSelection.pnName = pn.name
+                        FirmwareSelection.cardType = cardType
+                        FirmwareSelection.fileName = file.name
+                        FirmwareSelection.secondFilePath = ""
+                        FirmwareSelection.secondFileName = ""
+                        FirmwareSelection.pendingSecondOta = false
+
+                        _uiState.value = FirmwareBrowserUiState.Ready(
+                            filePath = file.absolutePath,
+                            fileName = file.name,
+                            validation = validation
+                        )
+                    }
+                    .onFailure { e ->
+                        _uiState.value = FirmwareBrowserUiState.Error(
+                            "${UiStrings.failedToDownload} : ${e.message}"
+                        )
+                    }
+            }
         }
     }
 

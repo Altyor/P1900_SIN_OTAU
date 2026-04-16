@@ -107,10 +107,16 @@ class SftpRepositoryImpl : SftpRepository {
             runCatching {
                 val sftp = getOrCreateSftp()
                 val path = "${SftpConfig.ROOT_DIR}/${product.name}"
-                sftp.ls(path)
+                val dirs = sftp.ls(path)
                     .filter { it.isDirectory && !it.name.startsWith(".") }
-                    .map { PnInfo(it.name) }
-                    .sortedBy { it.name }
+
+                // If FW/ exists directly under product, no PN subfolders
+                if (dirs.any { it.name.equals("FW", ignoreCase = true) }) {
+                    Log.d(TAG, "Product ${product.name} has direct FW/ folder (no PN)")
+                    listOf(PnInfo(""))
+                } else {
+                    dirs.map { PnInfo(it.name) }.sortedBy { it.name }
+                }
             }.onFailure {
                 Log.e(TAG, "Failed to list PNs for ${product.name}", it)
                 disconnect()
@@ -123,8 +129,8 @@ class SftpRepositoryImpl : SftpRepository {
     ): Result<Pair<Boolean, Boolean>> = withContext(Dispatchers.IO) {
         runCatching {
             val sftp = getOrCreateSftp()
-            val fwPath = "${SftpConfig.ROOT_DIR}/${product.name}/${pn.name}/FW"
-            val dirs = sftp.ls(fwPath)
+            val fwP = fwPath(product, pn)
+            val dirs = sftp.ls(fwP)
                 .filter { it.isDirectory }
                 .map { it.name }
             val hasAntenna = dirs.any { it.equals("Antenna", ignoreCase = true) }
@@ -142,7 +148,7 @@ class SftpRepositoryImpl : SftpRepository {
     ): Result<FirmwareValidation> = withContext(Dispatchers.IO) {
         runCatching {
             val sftp = getOrCreateSftp()
-            val configPath = "${SftpConfig.ROOT_DIR}/${product.name}/${pn.name}/FW/$CONFIG_FILENAME"
+            val configPath = "${fwPath(product, pn)}/$CONFIG_FILENAME"
             val inputStream = sftp.open(configPath).RemoteFileInputStream()
             val lines = BufferedReader(InputStreamReader(inputStream)).readLines()
             parseConfigIni(lines)
@@ -160,7 +166,7 @@ class SftpRepositoryImpl : SftpRepository {
     ): Result<File> = withContext(Dispatchers.IO) {
         runCatching {
             val sftp = getOrCreateSftp()
-            val fwDir = "${SftpConfig.ROOT_DIR}/${product.name}/${pn.name}/FW/${cardType.dirName}"
+            val fwDir = "${fwPath(product, pn)}/${cardType.dirName}"
             val firmwareFile = sftp.ls(fwDir)
                 .filter { !it.isDirectory }
                 .firstOrNull { entry ->
@@ -178,6 +184,15 @@ class SftpRepositoryImpl : SftpRepository {
         }.onFailure {
             Log.e(TAG, "Failed to download firmware", it)
             disconnect()
+        }
+    }
+
+    /** Builds the FW path: with PN → {root}/{product}/{pn}/FW, without PN → {root}/{product}/FW */
+    private fun fwPath(product: ProductInfo, pn: PnInfo): String {
+        return if (pn.isDirect) {
+            "${SftpConfig.ROOT_DIR}/${product.name}/FW"
+        } else {
+            "${SftpConfig.ROOT_DIR}/${product.name}/${pn.name}/FW"
         }
     }
 

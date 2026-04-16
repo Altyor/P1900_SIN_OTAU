@@ -31,6 +31,9 @@ class SiliconLabsDemoApplication : Application() {
         if (BuildConfig.DEBUG) {
             Timber.plant(DebugTree())
         }
+
+        // Load encrypted secrets (SFTP credentials, etc.)
+        com.siliconlabs.bledemo.features.firmware_browser.domain.SecretsManager.load(this)
     }
 
     private fun registerActivityLifecycle() {
