@@ -253,7 +253,9 @@ open class MainActivity : BaseActivity(),
                 com.siliconlabs.bledemo.features.firmware_browser.domain.CardType.BOTH -> strings.both
                 else -> ""
             }
-            _binding.tvSelectedProduct.text = "${selection.productName} — ${selection.pnName} — $cardLabel"
+            _binding.tvSelectedProduct.text = listOf(selection.productName, selection.pnName, cardLabel)
+                .filter { it.isNotBlank() }
+                .joinToString(" — ")
             if (selection.cardType == com.siliconlabs.bledemo.features.firmware_browser.domain.CardType.BOTH) {
                 _binding.tvSelectedFirmware.text = "${strings.antenna}: ${selection.fileName}\n${strings.power}: ${selection.secondFileName}"
             } else {

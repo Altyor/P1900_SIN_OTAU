@@ -74,6 +74,8 @@ class DeviceServicesActivity : BaseActivity() {
     private var otaInProgress = false
     private var firmwareReadRetries = 0
     private var modelReadRetries = 0
+    private var operatorOverrideActive = false
+    private var overrideDialogShown = false
     private var discoveryPending = false
     private var mtuReadType = MtuReadType.VIEW_INITIALIZATION
     private var isLogFragmentOn = false
@@ -147,8 +149,17 @@ class DeviceServicesActivity : BaseActivity() {
                 val newState =
                     intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, BluetoothDevice.BOND_NONE)
                 displayBondState(newState)
-                if (newState == BluetoothDevice.BOND_BONDED) {
+                if (newState == BluetoothDevice.BOND_BONDED && !operatorOverrideActive) {
                     showMessage(getString(R.string.device_bonded_successfully))
+                    // Bonding just completed — some devices only return DIS values after bonding.
+                    // Reset retry counters and restart the firmware/model read chain.
+                    Log.d("OTA_DEBUG", "Bond completed, restarting DIS read chain")
+                    firmwareReadRetries = 0
+                    modelReadRetries = 0
+                    overrideDialogShown = false
+                    getFirmwareVersionCharacteristic()?.let {
+                        bluetoothGatt?.readCharacteristic(it)
+                    }
                 }
             }
         }
@@ -378,6 +389,8 @@ class DeviceServicesActivity : BaseActivity() {
                                         bluetoothGatt?.readCharacteristic(it)
                                     }
                                 }, CHAR_READ_RETRY_DELAY_MS)
+                            } else {
+                                showOperatorOverrideDialog()
                             }
                         } else {
                             firmwareReadRetries = 0
@@ -416,6 +429,8 @@ class DeviceServicesActivity : BaseActivity() {
                                     bluetoothGatt?.readCharacteristic(it)
                                 }
                             }, CHAR_READ_RETRY_DELAY_MS)
+                        } else {
+                            showOperatorOverrideDialog()
                         }
                     }
                 }
@@ -435,6 +450,8 @@ class DeviceServicesActivity : BaseActivity() {
                                         bluetoothGatt?.readCharacteristic(it)
                                     }
                                 }, CHAR_READ_RETRY_DELAY_MS)
+                            } else {
+                                showOperatorOverrideDialog()
                             }
                         } else {
                             modelReadRetries = 0
@@ -453,6 +470,8 @@ class DeviceServicesActivity : BaseActivity() {
                                     bluetoothGatt?.readCharacteristic(it)
                                 }
                             }, CHAR_READ_RETRY_DELAY_MS)
+                        } else {
+                            showOperatorOverrideDialog()
                         }
                     }
                 }
@@ -467,6 +486,20 @@ class DeviceServicesActivity : BaseActivity() {
                     initServicesFragments(bluetoothGatt?.services.orEmpty())
                     mtuReadType = MtuReadType.VIEW_INITIALIZATION
                     gatt.requestMtu(INITIALIZATION_MTU_VALUE)
+
+                    // Post-OTA: new firmware may now populate DIS. Clear any operator
+                    // override so the fresh readings are properly validated against postModel.
+                    if (operatorOverrideActive) {
+                        Log.d("OTA_DEBUG", "Post-OTA: clearing operator override, re-validating DIS")
+                        operatorOverrideActive = false
+                        overrideDialogShown = false
+                        modelNumber = null
+                        firmwareVersion = null
+                        firmwareVersionAntenna = null
+                        firmwareVersionPower = null
+                    }
+                    firmwareReadRetries = 0
+                    modelReadRetries = 0
 
                     // Refresh firmware version after new firmware is loaded
                     handler.postDelayed({
@@ -1800,7 +1833,8 @@ class DeviceServicesActivity : BaseActivity() {
                     text = versionAntenna
                     visibility = View.VISIBLE
                     val expectedVersion = validation?.antennaVersion
-                    val isCorrect = expectedVersion != null && versionAntenna == expectedVersion
+                    val isCorrect = operatorOverrideActive ||
+                        (expectedVersion != null && versionAntenna == expectedVersion)
                     val backgroundColor = if (isCorrect) {
                         ContextCompat.getColor(this@DeviceServicesActivity, R.color.silabs_green)
                     } else {
@@ -1816,7 +1850,8 @@ class DeviceServicesActivity : BaseActivity() {
                     text = versionPower
                     visibility = View.VISIBLE
                     val expectedVersion = validation?.powerVersion
-                    val isCorrect = expectedVersion != null && versionPower == expectedVersion
+                    val isCorrect = operatorOverrideActive ||
+                        (expectedVersion != null && versionPower == expectedVersion)
                     val backgroundColor = if (isCorrect) {
                         ContextCompat.getColor(this@DeviceServicesActivity, R.color.silabs_green)
                     } else {
@@ -1841,7 +1876,8 @@ class DeviceServicesActivity : BaseActivity() {
             modelNumber?.let { model ->
                 val validation = selectedValidation
                 val expectedModel = if (otaCompleted) validation?.postModel else validation?.preModel
-                val isValidModel = expectedModel != null && model == expectedModel
+                val isValidModel = operatorOverrideActive ||
+                    (expectedModel != null && model == expectedModel)
 
                 binding.tvModelNumber.apply {
                     text = model
@@ -1854,7 +1890,7 @@ class DeviceServicesActivity : BaseActivity() {
                     setBackgroundColor(backgroundColor)
                 }
 
-                if (!isValidModel && validation != null && !otaCompleted) {
+                if (!isValidModel && validation != null && !otaCompleted && !operatorOverrideActive) {
                     showModelMismatchDialog(model, listOf(expectedModel ?: ""))
                 }
 
@@ -1865,6 +1901,74 @@ class DeviceServicesActivity : BaseActivity() {
                     updateFirmwareVersionDisplay()
                 }
             }
+        }
+    }
+
+    private fun showOperatorOverrideDialog() {
+        if (overrideDialogShown || operatorOverrideActive) return
+        overrideDialogShown = true
+        val strings = com.siliconlabs.bledemo.features.firmware_browser.domain.UiStrings
+        runOnUiThread {
+            androidx.appcompat.app.AlertDialog.Builder(this)
+                .setTitle(strings.overridePromptTitle)
+                .setMessage(strings.overridePromptMessage)
+                .setCancelable(false)
+                .setPositiveButton(strings.overrideYes) { dialog, _ ->
+                    dialog.dismiss()
+                    promptForOverrideCode()
+                }
+                .setNegativeButton(strings.disconnect) { dialog, _ ->
+                    dialog.dismiss()
+                    bluetoothGatt?.disconnect()
+                    finish()
+                }
+                .show()
+        }
+    }
+
+    private fun promptForOverrideCode(errorMessage: String? = null) {
+        val strings = com.siliconlabs.bledemo.features.firmware_browser.domain.UiStrings
+        runOnUiThread {
+            val input = android.widget.EditText(this).apply {
+                inputType = android.text.InputType.TYPE_CLASS_NUMBER or
+                    android.text.InputType.TYPE_NUMBER_VARIATION_PASSWORD
+                hint = strings.overrideCodeHint
+            }
+            val container = android.widget.FrameLayout(this).apply {
+                val pad = (16 * resources.displayMetrics.density).toInt()
+                setPadding(pad, pad / 2, pad, 0)
+                addView(input)
+            }
+            androidx.appcompat.app.AlertDialog.Builder(this)
+                .setTitle(strings.overrideCodeTitle)
+                .apply { if (errorMessage != null) setMessage(errorMessage) }
+                .setView(container)
+                .setCancelable(false)
+                .setPositiveButton(strings.overrideConfirm) { dialog, _ ->
+                    if (input.text.toString() == OPERATOR_OVERRIDE_CODE) {
+                        Log.d("OTA_DEBUG", "Operator override accepted")
+                        operatorOverrideActive = true
+                        if (modelNumber.isNullOrEmpty()) modelNumber = "OVERRIDE"
+                        if (firmwareVersion.isNullOrEmpty()) firmwareVersion = "?"
+                        if (firmwareVersionAntenna.isNullOrEmpty()) firmwareVersionAntenna = "?"
+                        if (firmwareVersionPower.isNullOrEmpty()) firmwareVersionPower = "?"
+                        runOnUiThread {
+                            updateFirmwareVersionDisplay()
+                            updateModelNumberDisplay()
+                        }
+                        dialog.dismiss()
+                    } else {
+                        Log.w("OTA_DEBUG", "Operator override code incorrect")
+                        dialog.dismiss()
+                        promptForOverrideCode(strings.overrideIncorrectCode)
+                    }
+                }
+                .setNegativeButton(strings.overrideCancel) { dialog, _ ->
+                    dialog.dismiss()
+                    bluetoothGatt?.disconnect()
+                    finish()
+                }
+                .show()
         }
     }
 
@@ -1906,6 +2010,8 @@ class DeviceServicesActivity : BaseActivity() {
         powerRebootHandled = false
         firmwareReadRetries = 0
         modelReadRetries = 0
+        operatorOverrideActive = false
+        overrideDialogShown = false
         Log.d("OTA_DEBUG", "OTA state reset for new device session (cardType=${selection.cardType}, pendingSecondOta=${selection.pendingSecondOta})")
     }
 
@@ -1985,7 +2091,8 @@ class DeviceServicesActivity : BaseActivity() {
             binding.tvOperatorModel.text = model
             val validation = selectedValidation
             val expectedModel = if (otaCompleted) validation?.postModel else validation?.preModel
-            val isValid = expectedModel != null && model == expectedModel
+            val isValid = operatorOverrideActive ||
+                (expectedModel != null && model == expectedModel)
             val drawable = if (isValid) R.drawable.ic_circle_green else R.drawable.ic_circle_red
             binding.tvOperatorModel.setCompoundDrawablesRelativeWithIntrinsicBounds(
                 0, 0, drawable, 0
@@ -2254,7 +2361,8 @@ class DeviceServicesActivity : BaseActivity() {
             firmwareVersionAntenna?.let { version ->
                 binding.tvOperatorAntenna.text = version
                 val expected = validation?.antennaVersion
-                val drawable = if (expected != null && version == expected)
+                val drawable = if (operatorOverrideActive ||
+                    (expected != null && version == expected))
                     R.drawable.ic_circle_green else R.drawable.ic_circle_red
                 binding.tvOperatorAntenna.setCompoundDrawablesRelativeWithIntrinsicBounds(
                     0, 0, drawable, 0
@@ -2265,7 +2373,8 @@ class DeviceServicesActivity : BaseActivity() {
             firmwareVersionPower?.let { version ->
                 binding.tvOperatorPower.text = version
                 val expected = validation?.powerVersion
-                val drawable = if (expected != null && version == expected)
+                val drawable = if (operatorOverrideActive ||
+                    (expected != null && version == expected))
                     R.drawable.ic_circle_green else R.drawable.ic_circle_red
                 binding.tvOperatorPower.setCompoundDrawablesRelativeWithIntrinsicBounds(
                     0, 0, drawable, 0
@@ -2286,7 +2395,9 @@ class DeviceServicesActivity : BaseActivity() {
                 com.siliconlabs.bledemo.features.firmware_browser.domain.CardType.BOTH -> strings.both
                 else -> ""
             }
-            binding.tvDeviceSelectedProduct.text = "${selection.productName} — ${selection.pnName} — $cardLabel"
+            binding.tvDeviceSelectedProduct.text = listOf(selection.productName, selection.pnName, cardLabel)
+                .filter { it.isNotBlank() }
+                .joinToString(" — ")
             if (selection.cardType == com.siliconlabs.bledemo.features.firmware_browser.domain.CardType.BOTH) {
                 binding.tvDeviceSelectedFirmware.text = "${strings.antenna}: ${selection.fileName}\n${strings.power}: ${selection.secondFileName}"
             } else {
@@ -2386,8 +2497,9 @@ class DeviceServicesActivity : BaseActivity() {
         private const val RECONNECT_TIMEOUT_MS = 100_000L // 100 seconds to reconnect after OTA
         private const val MAX_OTA_RETRIES = 3
         private const val POWER_TRANSFER_TIMEOUT_MS = 120_000L // 2 minutes for power serial transfer
-        private const val MAX_CHAR_READ_RETRIES = 5
+        private const val MAX_CHAR_READ_RETRIES = 10
         private const val CHAR_READ_RETRY_DELAY_MS = 2000L
+        private const val OPERATOR_OVERRIDE_CODE = "1900"
         private const val OTA_CONTROL_START_DELAY = 200L // needed to avoid error status 135
         private const val OTA_CONTROL_END_DELAY = 500L
         private const val CACHE_REFRESH_DELAY =

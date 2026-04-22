@@ -27,6 +27,16 @@ object UiStrings {
     var modelMismatchMessage = "Le modèle de l'appareil connecté \"%s\" ne correspond pas au produit sélectionné (attendu : %s).\n\nVeuillez déconnecter et vérifier que vous avez le bon appareil."
     var disconnect = "Déconnecter"
 
+    // Operator override
+    var overridePromptTitle = "Informations de l'appareil illisibles"
+    var overridePromptMessage = "Impossible de lire les informations de l'appareil après plusieurs tentatives. Continuer avec le mode opérateur ?"
+    var overrideYes = "Oui"
+    var overrideCodeTitle = "Saisir le code opérateur"
+    var overrideCodeHint = "Code"
+    var overrideConfirm = "Confirmer"
+    var overrideCancel = "Annuler"
+    var overrideIncorrectCode = "Code incorrect. Veuillez réessayer."
+
     // Device status
     var statusPreOta = "Connecté — Pré-OTA"
     var statusPreOtaBoth = "Connecté — Pré-OTA (Antenne + Puissance)"
