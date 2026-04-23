@@ -76,6 +76,20 @@ class DeviceServicesActivity : BaseActivity() {
     private var modelReadRetries = 0
     private var operatorOverrideActive = false
     private var overrideDialogShown = false
+    // True between antenna OTA completion and power OTA kickoff. If the BLE link
+    // drops during that ~3s window, we use this to reconnect and resume instead
+    // of finishing the activity or firing the power OTA on a dead GATT.
+    private var pendingPowerOta = false
+    private var modelMismatchDialogShown = false
+    // Set when an OTA_DATA write returns status 133 (Silabs Apploader flash-buffer
+    // stall on 2.x antennas). The subsequent auto-retry uses BALANCED connection
+    // priority to give the flash controller time to commit pages.
+    private var retryAtBalancedPriority = false
+    // Fired once after a full BOTH (or single) OTA completes to force a fresh GATT
+    // session — Android's attribute cache otherwise keeps feeding back the pre-OTA
+    // FW version string over the same connection.
+    private var postOtaColdReconnectPending = false
+    private var postOtaColdReconnectDone = false
     private var discoveryPending = false
     private var mtuReadType = MtuReadType.VIEW_INITIALIZATION
     private var isLogFragmentOn = false
@@ -103,7 +117,12 @@ class DeviceServicesActivity : BaseActivity() {
     private var otafile: ByteArray? = null
 
 
-    private var delayNoResponse = 1
+    // Per-packet pacing for non-reliable (WRITE_NO_RESPONSE) OTA uploads. 1 ms was
+    // way too fast — packets overflowed Android's LL queue and the loop "finished"
+    // in ~10s while the actual bytes were still in-flight, then END fired before
+    // the device had received the full image. 10 ms matches realistic BLE
+    // throughput at HIGH priority (~200 kbps, ~244 B per interval).
+    private var delayNoResponse = 10
     private var currentOtaFileType: OtaFileType = OtaFileType.APPLICATION
 
     // OTA file paths
@@ -143,12 +162,23 @@ class DeviceServicesActivity : BaseActivity() {
     private val localServicesFragment = LocalServicesFragment()
     private var activeFragment: Fragment = remoteServicesFragment
 
+    private var pendingPowerOtaFallbackRunnable: Runnable? = null
+
     private val bondStateChangeListener = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             if (intent.action == BluetoothDevice.ACTION_BOND_STATE_CHANGED) {
                 val newState =
                     intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, BluetoothDevice.BOND_NONE)
                 displayBondState(newState)
+                // If bonding is starting and we're waiting to fire the power OTA,
+                // cancel the short fallback timer — bonding can take 10–30+ s
+                // when it involves physical-button + pairing-dialog confirmation.
+                // We'll fire on BOND_BONDED below instead.
+                if (newState == BluetoothDevice.BOND_BONDING && pendingPowerOta) {
+                    Log.d("OTA_DEBUG", "[BOTH 2/2] Bonding started mid-handoff — cancelling fallback timer, waiting for BOND_BONDED")
+                    pendingPowerOtaFallbackRunnable?.let { handler.removeCallbacks(it) }
+                    pendingPowerOtaFallbackRunnable = null
+                }
                 if (newState == BluetoothDevice.BOND_BONDED && !operatorOverrideActive) {
                     showMessage(getString(R.string.device_bonded_successfully))
                     // Bonding just completed — some devices only return DIS values after bonding.
@@ -159,6 +189,18 @@ class DeviceServicesActivity : BaseActivity() {
                     overrideDialogShown = false
                     getFirmwareVersionCharacteristic()?.let {
                         bluetoothGatt?.readCharacteristic(it)
+                    }
+
+                    // If we were waiting to start the second (power) OTA, bonding just
+                    // unlocked writes — fire it now instead of racing with the handoff
+                    // timer. This covers the case where new antenna FW (post-antenna-OTA)
+                    // requires bonding before the power OTA writes can be accepted.
+                    if (pendingPowerOta) {
+                        Log.d("OTA_DEBUG", "[BOTH 2/2] Bond completed — firing second OTA now")
+                        pendingPowerOtaFallbackRunnable?.let { handler.removeCallbacks(it) }
+                        pendingPowerOtaFallbackRunnable = null
+                        pendingPowerOta = false
+                        handler.postDelayed({ checkForOtaCharacteristic() }, 500)
                     }
                 }
             }
@@ -195,17 +237,46 @@ class DeviceServicesActivity : BaseActivity() {
                     gatt.requestConnectionPriority(connectionPriority)
 
                     // Read firmware version now that MTU is set
-                    getFirmwareVersionCharacteristic()?.let { characteristic ->
+                    val fwChar = getFirmwareVersionCharacteristic()
+                    if (fwChar != null) {
                         Log.d("OTA_DEBUG", "Reading firmware version after MTU init")
-                        gatt.readCharacteristic(characteristic)
+                        gatt.readCharacteristic(fwChar)
+                    } else {
+                        // FW Version characteristic absent on this device. Silently activate
+                        // override so the OTA flow continues, and read Model directly so the
+                        // operator still sees the model validated.
+                        Log.w("OTA_DEBUG", "Firmware version characteristic absent — auto-override, reading model")
+                        operatorOverrideActive = true
+                        firmwareVersion = "?"
+                        firmwareVersionAntenna = "?"
+                        firmwareVersionPower = "?"
+                        runOnUiThread { updateFirmwareVersionDisplay() }
+                        getModelNumberCharacteristic()?.let { modelChar ->
+                            gatt.readCharacteristic(modelChar)
+                        }
                     }
                 }
 
                 MtuReadType.UPLOAD_INITIALIZATION -> {
                     MTU = if (status == BluetoothGatt.GATT_SUCCESS) mtu
                     else DEFAULT_MTU_VALUE
-                    gatt.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH) // optimize upload speed
-                    writeOtaControl(OTA_CONTROL_START_COMMAND)
+                    val priority = if (retryAtBalancedPriority) {
+                        Log.d("OTA_DEBUG", "Retry after flash-stall: using CONNECTION_PRIORITY_BALANCED")
+                        BluetoothGatt.CONNECTION_PRIORITY_BALANCED
+                    } else {
+                        BluetoothGatt.CONNECTION_PRIORITY_HIGH
+                    }
+                    gatt.requestConnectionPriority(priority)
+                    if (operatorOverrideActive) {
+                        // Non-standard firmware (e.g. antenna 2.22 / PRO Rework): writing 0x00
+                        // a second time in bootloader causes another reboot, not start-upload.
+                        // Skip the second OTA_CONTROL write and go straight to UPLOADING.
+                        Log.d("OTA_DEBUG", "Override mode: skipping second OTA_CONTROL write, going directly to UPLOADING")
+                        viewState = ViewState.UPLOADING
+                        startOtaUpload()
+                    } else {
+                        writeOtaControl(OTA_CONTROL_START_COMMAND)
+                    }
                 }
 
                 MtuReadType.USER_REQUESTED -> {
@@ -227,7 +298,11 @@ class DeviceServicesActivity : BaseActivity() {
 
             Log.d("OTA_DEBUG", "onConnectionStateChange: status=$status, newState=$newState, viewState=$viewState, device=${gatt.device.address}")
 
-            if (bluetoothGatt?.device?.address != gatt.device.address) {
+            // Use bluetoothDevice?.address here because bluetoothGatt is set to null by
+            // reconnect() (after close()) before connectGatt is invoked, so checking
+            // bluetoothGatt?.device?.address would incorrectly reject the reconnect.
+            val expectedAddress = bluetoothGatt?.device?.address ?: bluetoothDevice?.address
+            if (expectedAddress != null && expectedAddress != gatt.device.address) {
                 Log.w("OTA_DEBUG", "Connection state change for different device, ignoring")
                 return
             }
@@ -265,6 +340,16 @@ class DeviceServicesActivity : BaseActivity() {
                                 viewState = ViewState.REBOOTING_NEW_FIRMWARE
                                 reconnect(requestRssiUpdates = true)
                                 handler.postDelayed(reconnectTimeoutRunnable, RECONNECT_TIMEOUT_MS)
+                            } else if (pendingPowerOta) {
+                                // Link dropped during the antenna→power handoff window.
+                                // Don't finish; reconnect and let onServicesDiscovered
+                                // re-arm the power OTA kickoff.
+                                Log.w("OTA_DEBUG", "Handoff link drop (status=$status), reconnecting to resume second OTA")
+                                val strings = com.siliconlabs.bledemo.features.firmware_browser.domain.UiStrings
+                                runOnUiThread { showOtaWaitingOverlay(strings.statusReconnecting) }
+                                viewState = ViewState.REBOOTING_NEW_FIRMWARE
+                                reconnect(requestRssiUpdates = true)
+                                handler.postDelayed(reconnectTimeoutRunnable, RECONNECT_TIMEOUT_MS)
                             } else if (otaCompleted) {
                                 Log.d("OTA_DEBUG", "Device disconnected in IDLE after OTA completed, staying on result screen")
                             } else when (status) {
@@ -286,9 +371,14 @@ class DeviceServicesActivity : BaseActivity() {
                         }
 
                         ViewState.REBOOTING -> when (status) {
-                            19 -> {
-                                Log.d("OTA_DEBUG", "Expected disconnection for OTA mode reboot (status 19)")
+                            // 19 = peer-terminated (Silabs stock OTA), 22 = peer-terminated
+                            // (antenna 2.22 / PRO Rework pre-image). Both are clean
+                            // disconnects for OTA mode reboot.
+                            19, 22 -> {
+                                Log.d("OTA_DEBUG", "Expected disconnection for OTA mode reboot (status $status) — reconnecting")
                                 showInitializationInfo()
+                                reconnect(requestRssiUpdates = true)
+                                handler.postDelayed(reconnectTimeoutRunnable, RECONNECT_TIMEOUT_MS)
                             }
 
                             0 -> {
@@ -365,24 +455,40 @@ class DeviceServicesActivity : BaseActivity() {
             super.onCharacteristicRead(gatt, characteristic, status)
             remoteServicesFragment.updateCurrentCharacteristicView(characteristic.uuid)
 
+            // Always log the raw value for diagnostic dumps. Keeps normal handling
+            // below intact; the CHAR_DUMP tag is separate so it's easy to grep.
+            if (status == BluetoothGatt.GATT_SUCCESS) {
+                val bytes = characteristic.value
+                val hex = bytes?.joinToString(" ") { "%02X".format(it) } ?: "null"
+                val str = try { characteristic.getStringValue(0)?.replace("\n", "\\n") } catch (_: Exception) { null }
+                Log.d("CHAR_DUMP", "READ ${characteristic.uuid} len=${bytes?.size ?: 0} hex=[$hex] str=[$str]")
+            } else {
+                Log.d("CHAR_DUMP", "READ ${characteristic.uuid} FAILED status=$status")
+            }
+
             when (characteristic.uuid) {
                 UuidConsts.FIRMWARE_VERSION -> {
                     if (status == BluetoothGatt.GATT_SUCCESS) {
                         val fullVersion = characteristic.getStringValue(0) ?: ""
                         Log.d("OTA_DEBUG", "Firmware version raw: '$fullVersion'")
 
-                        // Sanity check: version parts should be small integers (e.g. 3.13.0)
-                        // Reject garbage from reads during bonding (e.g. 0.250.249)
-                        val looksValid = fullVersion.isNotEmpty() && fullVersion.split("-").all { part ->
-                            part.split(".").all { seg ->
+                        // Sanity check per-part: reject segments > 99 (typical bonding noise like 0.250.249).
+                        fun isSaneVersion(part: String): Boolean =
+                            part.isNotEmpty() && part.split(".").all { seg ->
                                 val n = seg.toIntOrNull()
                                 n != null && n in 0..99
                             }
-                        }
 
-                        if (!looksValid) {
+                        // Parse "antenna-power" or just "antenna"
+                        val versions = fullVersion.split("-", limit = 2)
+                        val antennaRaw = versions.getOrNull(0) ?: ""
+                        val powerRaw = versions.getOrNull(1) ?: ""
+                        val antennaSane = isSaneVersion(antennaRaw)
+                        val powerSane = powerRaw.isEmpty() || isSaneVersion(powerRaw)
+
+                        if (!antennaSane) {
                             firmwareReadRetries++
-                            Log.w("OTA_DEBUG", "Firmware version looks like garbage ('$fullVersion'), retry $firmwareReadRetries/$MAX_CHAR_READ_RETRIES")
+                            Log.w("OTA_DEBUG", "Antenna version looks like garbage ('$antennaRaw' from '$fullVersion'), retry $firmwareReadRetries/$MAX_CHAR_READ_RETRIES")
                             if (firmwareReadRetries <= MAX_CHAR_READ_RETRIES) {
                                 handler.postDelayed({
                                     getFirmwareVersionCharacteristic()?.let {
@@ -394,10 +500,12 @@ class DeviceServicesActivity : BaseActivity() {
                             }
                         } else {
                             firmwareReadRetries = 0
-                            // Parse version string format: "3.13.0-3.1.5" (Antenna-Power)
-                            val versions = fullVersion.split("-")
-                            firmwareVersionAntenna = versions.getOrNull(0)
-                            firmwareVersionPower = versions.getOrNull(1)
+                            firmwareVersionAntenna = antennaRaw
+                            // Power: only accept if it parses sanely; otherwise mark unknown (shown orange)
+                            firmwareVersionPower = if (powerRaw.isNotEmpty() && powerSane) powerRaw else null
+                            if (powerRaw.isNotEmpty() && !powerSane) {
+                                Log.w("OTA_DEBUG", "Power version portion '$powerRaw' out of range — marking unknown")
+                            }
                             // Keep old behavior for title (show antenna version)
                             firmwareVersion = firmwareVersionAntenna
 
@@ -501,10 +609,48 @@ class DeviceServicesActivity : BaseActivity() {
                     firmwareReadRetries = 0
                     modelReadRetries = 0
 
-                    // Refresh firmware version after new firmware is loaded
+                    // Force GATT cache refresh before re-reading — Android caches
+                    // characteristic values across reconnects, so without this the
+                    // post-OTA reads return the OLD firmware version even though
+                    // the device actually has the new one. (Users used to have to
+                    // manually disconnect+reconnect to see the correct version.)
+                    val cacheCleared = refreshDeviceCache()
+                    Log.d("OTA_DEBUG", "Post-OTA GATT cache refresh: $cacheCleared")
+
+                    // Re-read FW version + model after new firmware is loaded. Use a
+                    // slightly longer delay when we just cleared the cache — the stack
+                    // needs a moment to re-discover before reads return fresh values.
                     handler.postDelayed({
+                        getModelNumberCharacteristic()?.let {
+                            bluetoothGatt?.readCharacteristic(it)
+                        }
                         refreshFirmwareVersion()
-                    }, 2000)
+
+                        // refreshDeviceCache() via reflection often fails to actually
+                        // invalidate the attribute cache on modern Android. The only
+                        // reliable way is a full close() + connectGatt() cycle. Fire
+                        // once after the OTA-complete state, ~4s later, so the first
+                        // refresh read can log its stale value (for comparison) then
+                        // the cold reconnect forces fresh reads on the next session.
+                        if (otaCompleted && !postOtaColdReconnectDone && !postOtaColdReconnectPending) {
+                            handler.postDelayed({
+                                if (!postOtaColdReconnectDone && !postOtaColdReconnectPending) {
+                                    Log.d("OTA_DEBUG", "Post-OTA: triggering cold close+reconnect to flush cached DIS")
+                                    postOtaColdReconnectPending = true
+                                    bluetoothDevice = bluetoothGatt?.device
+                                    try { bluetoothGatt?.disconnect() } catch (_: Exception) {}
+                                    handler.postDelayed({
+                                        try { bluetoothGatt?.close() } catch (_: Exception) {}
+                                        bluetoothGatt = null
+                                        viewState = ViewState.REBOOTING_NEW_FIRMWARE
+                                        bluetoothDevice?.let { device ->
+                                            bluetoothService?.connectGatt(device, true, gattCallback)
+                                        }
+                                    }, 800)
+                                }
+                            }, 4000)
+                        }
+                    }, if (cacheCleared) 3000 else 2000)
                 }, GATT_FETCH_ON_SERVICE_DISCOVERED_DELAY)
             }
         }
@@ -522,10 +668,24 @@ class DeviceServicesActivity : BaseActivity() {
 
             if (status != BluetoothGatt.GATT_SUCCESS) {
                 Log.e("OTA_DEBUG", "Characteristic write failed: status=$status, UUID=${characteristic.uuid}")
-                showErrorDialog(status)
-                if (viewState == ViewState.UPLOADING) {
-                    Log.w("OTA_DEBUG", "Setting viewState from UPLOADING to IDLE due to write failure")
-                    viewState = ViewState.IDLE
+                // Silabs Apploader flash-buffer stall on old antenna (2.x) surfaces
+                // as status=133 on OTA_DATA, followed by supervision-timeout disconnect.
+                // Keep viewState=UPLOADING so the disconnect handler routes to
+                // attemptOtaRetry, and arm the slow-priority retry.
+                val isOtaDataStall = status == 133 &&
+                    characteristic.uuid == UuidConsts.OTA_DATA &&
+                    viewState == ViewState.UPLOADING
+                if (isOtaDataStall) {
+                    Log.w("OTA_DEBUG", "OTA_DATA status=133 stall detected — will retry at BALANCED priority")
+                    retryAtBalancedPriority = true
+                    // Intentionally leave viewState=UPLOADING so the imminent disconnect
+                    // triggers attemptOtaRetry instead of the IDLE "Unexpected" branch.
+                } else {
+                    showErrorDialog(status)
+                    if (viewState == ViewState.UPLOADING) {
+                        Log.w("OTA_DEBUG", "Setting viewState from UPLOADING to IDLE due to write failure")
+                        viewState = ViewState.IDLE
+                    }
                 }
             } else {
                 when (characteristic.uuid) {
@@ -551,6 +711,12 @@ class DeviceServicesActivity : BaseActivity() {
                                 if (viewState == ViewState.UPLOADING) {
                                     Log.d("OTA_DEBUG", "OTA upload completed, setting state to IDLE")
                                     viewState = ViewState.IDLE
+                                    // Clear retry bookkeeping — upload succeeded. Otherwise
+                                    // onServicesDiscovered REBOOTING_NEW_FIRMWARE sees
+                                    // otaRetryCount > 0 after the device reboots and
+                                    // treats the successful OTA as a failure to retry.
+                                    otaRetryCount = 0
+                                    retryAtBalancedPriority = false
                                     if (boolFullOTA) {
                                         Log.d("OTA_DEBUG", "Full OTA: preparing for next upload")
                                         prepareForNextUpload()
@@ -580,7 +746,14 @@ class DeviceServicesActivity : BaseActivity() {
                     }
                 }
             }
-            bluetoothGatt?.readCharacteristic(characteristic)
+            // Don't read-back OTA_DATA / OTA_CONTROL after each write — it clogs the
+            // BLE operation queue with thousands of reads during upload, stalling the
+            // transfer on older devices. Only do it for other characteristics where
+            // the UI wants to refresh the displayed value.
+            if (characteristic.uuid != UuidConsts.OTA_DATA &&
+                characteristic.uuid != UuidConsts.OTA_CONTROL) {
+                bluetoothGatt?.readCharacteristic(characteristic)
+            }
         }
 
         //CALLBACK ON DESCRIPTOR WRITE
@@ -645,6 +818,7 @@ class DeviceServicesActivity : BaseActivity() {
                         Log.d("OTA_DEBUG", "Normal services discovery in IDLE state")
                         handler.postDelayed({
                             initServicesFragments(bluetoothGatt?.services.orEmpty())
+                            dumpAllCharacteristics()
                             mtuReadType = MtuReadType.VIEW_INITIALIZATION
                             gatt.requestMtu(INITIALIZATION_MTU_VALUE)
                         }, GATT_FETCH_ON_SERVICE_DISCOVERED_DELAY)
@@ -661,6 +835,45 @@ class DeviceServicesActivity : BaseActivity() {
                     ViewState.REBOOTING_NEW_FIRMWARE -> {
                         handler.removeCallbacks(reconnectTimeoutRunnable)
 
+                        // Cold-reconnect completed (forced after full OTA to flush
+                        // Android's attribute cache). Don't re-run the post-OTA
+                        // branch — just do a fresh view-init like the IDLE path.
+                        if (postOtaColdReconnectPending) {
+                            Log.d("OTA_DEBUG", "Post-OTA cold reconnect: services discovered, running fresh view init")
+                            postOtaColdReconnectPending = false
+                            postOtaColdReconnectDone = true
+                            viewState = ViewState.IDLE
+                            handler.postDelayed({
+                                initServicesFragments(bluetoothGatt?.services.orEmpty())
+                                mtuReadType = MtuReadType.VIEW_INITIALIZATION
+                                gatt.requestMtu(INITIALIZATION_MTU_VALUE)
+                            }, GATT_FETCH_ON_SERVICE_DISCOVERED_DELAY)
+                            return
+                        }
+
+                        // Resumed mid-handoff after a link drop. Let the device settle
+                        // longer than the initial 3s since the BLE stack is still coming
+                        // up on the newly-booted firmware.
+                        if (pendingPowerOta) {
+                            viewState = ViewState.IDLE
+                            val alreadyBonded = bluetoothGatt?.device?.bondState ==
+                                BluetoothDevice.BOND_BONDED
+                            val delay = if (alreadyBonded) 5_000L else 60_000L
+                            Log.d("OTA_DEBUG", "[BOTH 2/2] Reconnected after handoff drop — scheduling power OTA (alreadyBonded=$alreadyBonded, delay=${delay}ms)")
+                            val runnable = Runnable {
+                                if (pendingPowerOta) {
+                                    Log.d("OTA_DEBUG", "[BOTH 2/2] Fallback timer fired")
+                                    pendingPowerOta = false
+                                    pendingPowerOtaFallbackRunnable = null
+                                    checkForOtaCharacteristic()
+                                }
+                            }
+                            pendingPowerOtaFallbackRunnable?.let { handler.removeCallbacks(it) }
+                            pendingPowerOtaFallbackRunnable = runnable
+                            handler.postDelayed(runnable, delay)
+                            return
+                        }
+
                         // If this is a retry after upload disconnect, restart the OTA
                         if (otaRetryCount > 0) {
                             Log.d("OTA_DEBUG", "Reconnected after upload failure, retrying OTA (attempt $otaRetryCount/$MAX_OTA_RETRIES)")
@@ -675,14 +888,16 @@ class DeviceServicesActivity : BaseActivity() {
                         val selection = com.siliconlabs.bledemo.features.firmware_browser.domain.FirmwareSelection
                         if (selection.pendingSecondOta) {
                             // First OTA done (antenna), now start second (power)
-                            Log.d("OTA_DEBUG", "First OTA complete, starting second OTA (power)")
+                            Log.d("OTA_DEBUG", "[BOTH 1/2 done] Antenna OTA complete. Switching to power file: name='${selection.secondFileName}' path='${selection.secondFilePath}' exists=${java.io.File(selection.secondFilePath).exists()}")
                             antennaOtaCompleted = true
                             otaRetryCount = 0
                             selection.pendingSecondOta = false
                             globalOtaFilePath = selection.secondFilePath
                             globalOtaFileName = selection.secondFileName
+                            // Clear path to prevent resetOtaState from treating the OTA as
+                            // still pending on a subsequent activity recreate. Keep the name
+                            // so the summary bar keeps showing the power filename.
                             selection.secondFilePath = ""
-                            selection.secondFileName = ""
 
                             val strings = com.siliconlabs.bledemo.features.firmware_browser.domain.UiStrings
                             runOnUiThread {
@@ -693,11 +908,42 @@ class DeviceServicesActivity : BaseActivity() {
                                 )
                             }
 
-                            // Wait for device to stabilize, then start second OTA
+                            // Wait for device to stabilize, then start second OTA.
+                            // pendingPowerOta acts as a safety net: if the link drops
+                            // during the wait, STATE_DISCONNECTED IDLE reconnects us
+                            // instead of finishing the activity, and onServicesDiscovered
+                            // re-arms the power OTA.
+                            //
+                            // Delay selection:
+                            //  - Already bonded (bond persists through reboot) → 3s
+                            //    settle, no bond event will fire.
+                            //  - Not bonded → 60s fallback, cancelled by
+                            //    BOND_BONDING (so we wait indefinitely for
+                            //    BOND_BONDED); gives operator time to press the
+                            //    physical confirm button + Android pair dialog.
+                            pendingPowerOta = true
                             viewState = ViewState.IDLE
-                            handler.postDelayed({
-                                checkForOtaCharacteristic()
-                            }, 3000)
+                            val alreadyBonded = bluetoothGatt?.device?.bondState ==
+                                BluetoothDevice.BOND_BONDED
+                            val delay = if (alreadyBonded) 3_000L else 60_000L
+                            Log.d("OTA_DEBUG", "[BOTH 2/2] Arming fallback: alreadyBonded=$alreadyBonded, delay=${delay}ms")
+                            val runnable = Runnable {
+                                val gattOk = bluetoothGatt != null &&
+                                    bluetoothGatt?.getService(UuidConsts.OTA_SERVICE) != null
+                                if (!pendingPowerOta) {
+                                    Log.d("OTA_DEBUG", "[BOTH 2/2] timer fired but pendingPowerOta already cleared")
+                                } else if (!gattOk) {
+                                    Log.w("OTA_DEBUG", "[BOTH 2/2] timer fired but GATT not connected, waiting for reconnect")
+                                } else {
+                                    Log.d("OTA_DEBUG", "[BOTH 2/2] Firing second OTA: globalOtaFilePath='$globalOtaFilePath' viewState=$viewState otaInProgress=$otaInProgress")
+                                    pendingPowerOta = false
+                                    pendingPowerOtaFallbackRunnable = null
+                                    checkForOtaCharacteristic()
+                                }
+                            }
+                            pendingPowerOtaFallbackRunnable?.let { handler.removeCallbacks(it) }
+                            pendingPowerOtaFallbackRunnable = runnable
+                            handler.postDelayed(runnable, delay)
                         } else {
                             // Check if this was a Power OTA — need to wait for serial transfer + reboot
                             val isPowerOta = isPowerCardOta()
@@ -951,7 +1197,7 @@ class DeviceServicesActivity : BaseActivity() {
                 startDirectOta()
             } else {
                 // No file selected, show file selection dialog
-                showMessage("No OTA file selected. Please restart the app and select an OTA file.")
+                showMessage(com.siliconlabs.bledemo.features.firmware_browser.domain.UiStrings.otaNoFileSelected)
             }
         } else {
             OtaCharacteristicMissingDialog().show(
@@ -969,24 +1215,36 @@ class DeviceServicesActivity : BaseActivity() {
             // Set the app path to the global OTA file path
             appPath = globalOtaFilePath
 
-            // Use reliable mode as default (like the original config dialog)
+            // Always reliable mode. Non-reliable (WRITE_NO_RESPONSE) streaming was
+            // flaky — Android's LL queue filled up and packets were dropped, resulting
+            // in truncated images the bootloader rolled back.
             reliable = true
+            Log.d("OTA_DEBUG", "OTA mode: reliable=$reliable, otaDataCharPresent=$otaDataCharPresent")
 
-            // Check if OTA data characteristic is present
-            if (otaDataCharPresent) {
-                Log.d("OTA_DEBUG", "OTA data characteristic already present, starting upload initialization")
+            // Normal Silabs flow: if OTA_DATA is already visible, the device is either
+            // already in OTA mode or always exposes the OTA service — either way, skip
+            // the explicit reboot and go straight to upload initialization (single 0x00
+            // write in INITIALIZING_UPLOAD). Adding an extra reboot here causes some
+            // devices to discard the subsequent image.
+            // Exception: operator-override devices (unknown pre-image e.g. antenna 2.22)
+            // need the explicit reboot-via-0x00 because writing 0x00 a second time in
+            // their bootloader causes another reboot, so we can't use the single-write
+            // path — those get the explicit REBOOTING step with "skip second 0x00"
+            // handling in onMtuChanged UPLOAD_INITIALIZATION.
+            if (otaDataCharPresent && !operatorOverrideActive) {
+                Log.d("OTA_DEBUG", "OTA data char already visible — going straight to upload initialization")
                 viewState = ViewState.INITIALIZING_UPLOAD
                 mtuReadType = MtuReadType.UPLOAD_INITIALIZATION
                 val result = bluetoothGatt?.requestMtu(INITIALIZATION_MTU_VALUE)
                 Log.d("OTA_DEBUG", "MTU request result: $result")
             } else {
-                Log.d("OTA_DEBUG", "OTA data characteristic not present, rebooting device to OTA mode")
+                Log.d("OTA_DEBUG", "Writing START control to reboot into OTA mode")
                 viewState = ViewState.REBOOTING
                 writeOtaControl(OTA_CONTROL_START_COMMAND)
             }
         } else {
             Log.w("OTA_DEBUG", "Cannot start OTA: device not in IDLE state (current: $viewState)")
-            showMessage("Device is not ready for OTA. Please wait or disconnect and reconnect.")
+            showMessage(com.siliconlabs.bledemo.features.firmware_browser.domain.UiStrings.otaDeviceNotReady)
         }
     }
 
@@ -1039,6 +1297,42 @@ class DeviceServicesActivity : BaseActivity() {
     private fun getDeviceNameCharacteristic(): BluetoothGattCharacteristic? {
         return bluetoothGatt?.getService(UuidConsts.GENERIC_ACCESS)
             ?.getCharacteristic(UuidConsts.DEVICE_NAME)
+    }
+
+    private var characteristicDumpDone = false
+
+    private fun dumpAllCharacteristics() {
+        if (characteristicDumpDone) return
+        characteristicDumpDone = true
+        val services = bluetoothGatt?.services.orEmpty()
+        Log.d("CHAR_DUMP", "=== Dumping ${services.size} services on ${bluetoothGatt?.device?.address} ===")
+        var delay = 500L
+        for (service in services) {
+            Log.d("CHAR_DUMP", "Service: ${service.uuid}")
+            for (char in service.characteristics) {
+                val props = char.properties
+                val propStr = buildString {
+                    if ((props and BluetoothGattCharacteristic.PROPERTY_READ) != 0) append("R ")
+                    if ((props and BluetoothGattCharacteristic.PROPERTY_WRITE) != 0) append("W ")
+                    if ((props and BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE) != 0) append("WNR ")
+                    if ((props and BluetoothGattCharacteristic.PROPERTY_NOTIFY) != 0) append("N ")
+                    if ((props and BluetoothGattCharacteristic.PROPERTY_INDICATE) != 0) append("I ")
+                }
+                Log.d("CHAR_DUMP", "  Char ${char.uuid} props=$propStr")
+                if ((props and BluetoothGattCharacteristic.PROPERTY_READ) != 0) {
+                    val charRef = char
+                    handler.postDelayed({
+                        try {
+                            bluetoothGatt?.readCharacteristic(charRef)
+                        } catch (e: Exception) {
+                            Log.w("CHAR_DUMP", "read failed for ${charRef.uuid}: ${e.message}")
+                        }
+                    }, delay)
+                    delay += 350
+                }
+            }
+        }
+        Log.d("CHAR_DUMP", "=== Queued ${delay / 350} reads; values will appear over next ${delay}ms ===")
     }
 
     private fun getFirmwareVersionCharacteristic(): BluetoothGattCharacteristic? {
@@ -1546,6 +1840,12 @@ class DeviceServicesActivity : BaseActivity() {
             val end = System.nanoTime()
             val time = (end - start) / 1_000_000.toFloat()
             Log.d("OTA Time - ", "" + time + "s")
+            // Let any packets still queued in Android's LL buffer actually transmit
+            // before we tell the bootloader "upload done". Without this, END can fire
+            // while the last several KB are still in-flight, and the device verifies
+            // a truncated image and rolls back to the old firmware.
+            Log.d("OTA_DEBUG", "Non-reliable upload submitted, waiting 1s for queue drain before END")
+            Thread.sleep(1000)
             runOnUiThread {
                 otaProgressDialog?.stopUploading()
             }
@@ -1827,44 +2127,39 @@ class DeviceServicesActivity : BaseActivity() {
         runOnUiThread {
             val validation = selectedValidation
 
-            // Antenna version display
-            firmwareVersionAntenna?.let { versionAntenna ->
-                binding.tvFirmwareVersionAntenna.apply {
-                    text = versionAntenna
-                    visibility = View.VISIBLE
-                    val expectedVersion = validation?.antennaVersion
-                    val isCorrect = operatorOverrideActive ||
-                        (expectedVersion != null && versionAntenna == expectedVersion)
-                    val backgroundColor = if (isCorrect) {
-                        ContextCompat.getColor(this@DeviceServicesActivity, R.color.silabs_green)
-                    } else {
-                        ContextCompat.getColor(this@DeviceServicesActivity, R.color.silabs_red)
-                    }
-                    setBackgroundColor(backgroundColor)
+            // Antenna version display — always show; "?" orange when unknown
+            val versionAntenna = firmwareVersionAntenna?.takeIf { it.isNotEmpty() } ?: "?"
+            binding.tvFirmwareVersionAntenna.apply {
+                text = versionAntenna
+                visibility = View.VISIBLE
+                val expectedVersion = validation?.antennaVersion
+                val isUnknown = operatorOverrideActive || versionAntenna == "?"
+                val isCorrect = expectedVersion != null && versionAntenna == expectedVersion
+                val backgroundColor = when {
+                    isUnknown -> ContextCompat.getColor(this@DeviceServicesActivity, R.color.silabs_orange)
+                    isCorrect -> ContextCompat.getColor(this@DeviceServicesActivity, R.color.silabs_green)
+                    else      -> ContextCompat.getColor(this@DeviceServicesActivity, R.color.silabs_red)
                 }
+                setBackgroundColor(backgroundColor)
             }
 
-            // Power version display
-            firmwareVersionPower?.let { versionPower ->
-                binding.tvFirmwareVersionPower.apply {
-                    text = versionPower
-                    visibility = View.VISIBLE
-                    val expectedVersion = validation?.powerVersion
-                    val isCorrect = operatorOverrideActive ||
-                        (expectedVersion != null && versionPower == expectedVersion)
-                    val backgroundColor = if (isCorrect) {
-                        ContextCompat.getColor(this@DeviceServicesActivity, R.color.silabs_green)
-                    } else {
-                        ContextCompat.getColor(this@DeviceServicesActivity, R.color.silabs_red)
-                    }
-                    setBackgroundColor(backgroundColor)
+            // Power version display — always show; "?" orange when unknown
+            val versionPower = firmwareVersionPower?.takeIf { it.isNotEmpty() } ?: "?"
+            binding.tvFirmwareVersionPower.apply {
+                text = versionPower
+                visibility = View.VISIBLE
+                val expectedVersion = validation?.powerVersion
+                val isUnknown = operatorOverrideActive || versionPower == "?"
+                val isCorrect = expectedVersion != null && versionPower == expectedVersion
+                val backgroundColor = when {
+                    isUnknown -> ContextCompat.getColor(this@DeviceServicesActivity, R.color.silabs_orange)
+                    isCorrect -> ContextCompat.getColor(this@DeviceServicesActivity, R.color.silabs_green)
+                    else      -> ContextCompat.getColor(this@DeviceServicesActivity, R.color.silabs_red)
                 }
+                setBackgroundColor(backgroundColor)
             }
 
-            // Show container if at least one version is available
-            if (firmwareVersionAntenna != null || firmwareVersionPower != null) {
-                binding.firmwareVersionsContainer.visibility = View.VISIBLE
-            }
+            binding.firmwareVersionsContainer.visibility = View.VISIBLE
 
             updateOperatorFirmware()
             checkAllVersionsMatch()
@@ -1973,14 +2268,27 @@ class DeviceServicesActivity : BaseActivity() {
     }
 
     private fun showModelMismatchDialog(deviceModel: String, expectedModels: List<String>) {
+        // Guard against the periodic firmware-version refresh (every 10 s) re-firing
+        // a model read → updateModelNumberDisplay → this dialog while the previous
+        // dialog is still waiting for the operator. Stacking dismisses them all at
+        // once if the operator finally taps a button.
+        if (modelMismatchDialogShown) return
+        modelMismatchDialogShown = true
+
         val expected = expectedModels.firstOrNull() ?: "NULL"
         val strings = com.siliconlabs.bledemo.features.firmware_browser.domain.UiStrings
         androidx.appcompat.app.AlertDialog.Builder(this)
             .setTitle(strings.modelMismatchTitle)
             .setMessage(String.format(strings.modelMismatchMessage, deviceModel, expected))
             .setCancelable(false)
+            .setPositiveButton(strings.modelMismatchOverride) { dialog, _ ->
+                dialog.dismiss()
+                modelMismatchDialogShown = false
+                promptForOverrideCode()
+            }
             .setNegativeButton(strings.disconnect) { dialog, _ ->
                 dialog.dismiss()
+                modelMismatchDialogShown = false
                 bluetoothGatt?.disconnect()
                 finish()
             }
@@ -1989,18 +2297,28 @@ class DeviceServicesActivity : BaseActivity() {
 
     private fun resetOtaState() {
         val selection = com.siliconlabs.bledemo.features.firmware_browser.domain.FirmwareSelection
-        // If BOTH was selected, ensure we start from antenna (not stale power-only state)
-        if (selection.cardType == com.siliconlabs.bledemo.features.firmware_browser.domain.CardType.BOTH
-            && selection.secondFilePath.isNotEmpty()) {
-            // The ViewModel stored antenna path in Ready.filePath, power in secondFilePath
-            // Reconstruct: find antenna file from cache using the original fileName
+        // For a BOTH OTA, restore both antenna and power file paths from the cache.
+        // secondFilePath gets cleared at the antenna→power handoff (to stop stale
+        // pendingSecondOta restoration on mid-OTA activity recreation), but a
+        // *new* device session — operator swapped parts — must start fresh from
+        // the antenna, so we rehydrate both paths from the cached files.
+        if (selection.cardType == com.siliconlabs.bledemo.features.firmware_browser.domain.CardType.BOTH) {
             val cacheDir = cacheDir
-            val antennaFile = java.io.File(cacheDir, selection.fileName)
-            if (antennaFile.exists()) {
-                globalOtaFilePath = antennaFile.absolutePath
-                globalOtaFileName = selection.fileName
+            if (selection.fileName.isNotEmpty()) {
+                val antennaFile = java.io.File(cacheDir, selection.fileName)
+                if (antennaFile.exists()) {
+                    globalOtaFilePath = antennaFile.absolutePath
+                    globalOtaFileName = selection.fileName
+                }
             }
-            selection.pendingSecondOta = true
+            if (selection.secondFilePath.isEmpty() && selection.secondFileName.isNotEmpty()) {
+                val powerFile = java.io.File(cacheDir, selection.secondFileName)
+                if (powerFile.exists()) {
+                    selection.secondFilePath = powerFile.absolutePath
+                    Log.d("OTA_DEBUG", "resetOtaState: rehydrated secondFilePath from cache (${selection.secondFileName})")
+                }
+            }
+            selection.pendingSecondOta = selection.secondFilePath.isNotEmpty()
         }
         otaCompleted = false
         otaInProgress = false
@@ -2012,6 +2330,14 @@ class DeviceServicesActivity : BaseActivity() {
         modelReadRetries = 0
         operatorOverrideActive = false
         overrideDialogShown = false
+        pendingPowerOta = false
+        pendingPowerOtaFallbackRunnable?.let { handler.removeCallbacks(it) }
+        pendingPowerOtaFallbackRunnable = null
+        modelMismatchDialogShown = false
+        retryAtBalancedPriority = false
+        characteristicDumpDone = false
+        postOtaColdReconnectPending = false
+        postOtaColdReconnectDone = false
         Log.d("OTA_DEBUG", "OTA state reset for new device session (cardType=${selection.cardType}, pendingSecondOta=${selection.pendingSecondOta})")
     }
 
@@ -2358,29 +2684,35 @@ class DeviceServicesActivity : BaseActivity() {
         runOnUiThread {
             val validation = selectedValidation
 
-            firmwareVersionAntenna?.let { version ->
-                binding.tvOperatorAntenna.text = version
-                val expected = validation?.antennaVersion
-                val drawable = if (operatorOverrideActive ||
-                    (expected != null && version == expected))
-                    R.drawable.ic_circle_green else R.drawable.ic_circle_red
-                binding.tvOperatorAntenna.setCompoundDrawablesRelativeWithIntrinsicBounds(
-                    0, 0, drawable, 0
-                )
-                binding.tvOperatorAntenna.compoundDrawablePadding = 16
+            val antennaVersion = firmwareVersionAntenna?.takeIf { it.isNotEmpty() } ?: "?"
+            binding.tvOperatorAntenna.text = antennaVersion
+            val antennaExpected = validation?.antennaVersion
+            val antennaUnknown = operatorOverrideActive || antennaVersion == "?"
+            val antennaCorrect = antennaExpected != null && antennaVersion == antennaExpected
+            val antennaDrawable = when {
+                antennaUnknown -> R.drawable.ic_circle_orange
+                antennaCorrect -> R.drawable.ic_circle_green
+                else           -> R.drawable.ic_circle_red
             }
+            binding.tvOperatorAntenna.setCompoundDrawablesRelativeWithIntrinsicBounds(
+                0, 0, antennaDrawable, 0
+            )
+            binding.tvOperatorAntenna.compoundDrawablePadding = 16
 
-            firmwareVersionPower?.let { version ->
-                binding.tvOperatorPower.text = version
-                val expected = validation?.powerVersion
-                val drawable = if (operatorOverrideActive ||
-                    (expected != null && version == expected))
-                    R.drawable.ic_circle_green else R.drawable.ic_circle_red
-                binding.tvOperatorPower.setCompoundDrawablesRelativeWithIntrinsicBounds(
-                    0, 0, drawable, 0
-                )
-                binding.tvOperatorPower.compoundDrawablePadding = 16
+            val powerVersion = firmwareVersionPower?.takeIf { it.isNotEmpty() } ?: "?"
+            binding.tvOperatorPower.text = powerVersion
+            val powerExpected = validation?.powerVersion
+            val powerUnknown = operatorOverrideActive || powerVersion == "?"
+            val powerCorrect = powerExpected != null && powerVersion == powerExpected
+            val powerDrawable = when {
+                powerUnknown -> R.drawable.ic_circle_orange
+                powerCorrect -> R.drawable.ic_circle_green
+                else         -> R.drawable.ic_circle_red
             }
+            binding.tvOperatorPower.setCompoundDrawablesRelativeWithIntrinsicBounds(
+                0, 0, powerDrawable, 0
+            )
+            binding.tvOperatorPower.compoundDrawablePadding = 16
         }
     }
 

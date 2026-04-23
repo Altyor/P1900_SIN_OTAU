@@ -24,12 +24,13 @@ object UiStrings {
 
     // Model validation
     var modelMismatchTitle = "Modèle incompatible"
-    var modelMismatchMessage = "Le modèle de l'appareil connecté \"%s\" ne correspond pas au produit sélectionné (attendu : %s).\n\nVeuillez déconnecter et vérifier que vous avez le bon appareil."
+    var modelMismatchMessage = "Le modèle de l'appareil connecté \"%s\" ne correspond pas au produit sélectionné (attendu : %s).\n\nVeuillez déconnecter et vérifier que vous avez le bon appareil, ou continuer en mode opérateur."
+    var modelMismatchOverride = "Mode opérateur"
     var disconnect = "Déconnecter"
 
     // Operator override
     var overridePromptTitle = "Informations de l'appareil illisibles"
-    var overridePromptMessage = "Impossible de lire les informations de l'appareil après plusieurs tentatives. Continuer avec le mode opérateur ?"
+    var overridePromptMessage = "Impossible de lire les informations de l'appareil. Continuer avec le mode opérateur ?"
     var overrideYes = "Oui"
     var overrideCodeTitle = "Saisir le code opérateur"
     var overrideCodeHint = "Code"
@@ -37,14 +38,20 @@ object UiStrings {
     var overrideCancel = "Annuler"
     var overrideIncorrectCode = "Code incorrect. Veuillez réessayer."
 
+    // OTA launch errors
+    var otaNoFileSelected = "Aucun fichier OTA sélectionné. Veuillez redémarrer l'application et sélectionner un fichier OTA."
+    var otaDeviceNotReady = "L'appareil n'est pas prêt pour l'OTA. Veuillez patienter ou déconnecter puis reconnecter."
+
     // Device status
     var statusPreOta = "Connecté — Pré-OTA"
     var statusPreOtaBoth = "Connecté — Pré-OTA (Antenne + Puissance)"
     var statusUploading = "Mise à jour en cours..."
+    var statusUploadingAntenna = "Mise à jour Antenne (1/2) en cours..."
+    var statusUploadingPower = "Mise à jour Puissance (2/2) en cours..."
     var statusRebooting = "Redémarrage de l'appareil..."
     var statusReconnecting = "Reconnexion en cours..."
     var statusPostOta = "Connecté — Post-OTA"
-    var statusSecondOta = "Antenne terminée.\nLancement de la mise à jour Puissance..."
+    var statusSecondOta = "Antenne (1/2) terminée.\nLancement de la mise à jour Puissance (2/2)..."
     var statusPowerTransfer = "Transfert série vers carte Puissance...\nVeuillez patienter (~1m30s)"
     var statusAlreadyUpToDate = "Firmware déjà à jour"
     var versionsAlreadyMatch = "Déjà à jour"

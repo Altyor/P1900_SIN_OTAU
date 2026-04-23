@@ -13,6 +13,7 @@
     <color name="silabs_yellow">#F9C80E</color>
     <color name="silabs_grey">#7A7878</color>
     <color name="silabs_green">#14A359</color>
+    <color name="silabs_orange">#F57C00</color>
     <color name="silabs_magenta">#FF00FF</color>
     <color name="silabs_cyan_led">#00FFFF</color>
     <color name="silabs_yellow_led">#FFFF00</color>
