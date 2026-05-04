@@ -102,8 +102,12 @@ def _build_repo(loader: SecretLoader) -> ProductRepo:
     return ProductRepo(client, root=root_dir)
 
 
-def _load_stylesheet() -> str:
-    qss_path = Path(__file__).parent / "ui" / "styles.qss"
+THEMES = ("dark", "win98")
+
+
+def load_theme(name: str) -> str:
+    """Read a theme's QSS by name. Returns '' if the file is missing."""
+    qss_path = Path(__file__).parent / "ui" / "themes" / f"{name}.qss"
     if qss_path.exists():
         return qss_path.read_text(encoding="utf-8")
     return ""
@@ -130,7 +134,7 @@ def main() -> int:
     _setup_logging()
     app = QApplication(sys.argv)
     _install_french_translator(app)
-    qss = _load_stylesheet()
+    qss = load_theme(THEMES[0])
     if qss:
         app.setStyleSheet(qss)
 

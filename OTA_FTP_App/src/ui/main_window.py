@@ -3,8 +3,10 @@ from __future__ import annotations
 from typing import Optional
 
 from PyQt6.QtCore import QThread, pyqtSignal
+from PyQt6.QtGui import QShortcut, QKeySequence
 from PyQt6.QtWidgets import (
-    QMainWindow, QStackedWidget, QMessageBox, QStatusBar, QInputDialog, QLineEdit
+    QMainWindow, QStackedWidget, QMessageBox, QStatusBar, QInputDialog, QLineEdit,
+    QApplication
 )
 
 from ..sftp.product_repo import ProductRepo
@@ -78,6 +80,21 @@ class MainWindow(QMainWindow):
         self._delete_worker = None
 
         self.gallery.refresh()
+
+        # Theme cycling: Ctrl+T flips between dark and win98 stylesheets.
+        self._theme_index = 0
+        QShortcut(QKeySequence("Ctrl+T"), self, activated=self._cycle_theme)
+
+    def _cycle_theme(self) -> None:
+        from .. import main as _main  # avoid circular import at module load
+        themes = _main.THEMES
+        self._theme_index = (self._theme_index + 1) % len(themes)
+        name = themes[self._theme_index]
+        qss = _main.load_theme(name)
+        app = QApplication.instance()
+        if app is not None:
+            app.setStyleSheet(qss)
+        self._set_status(f"Thème : {name}")
 
     def _set_status(self, msg: str) -> None:
         self.status_bar.showMessage(msg)

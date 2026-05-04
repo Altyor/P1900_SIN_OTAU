@@ -1,0 +1,160 @@
+/* Windows 98 — beige + 3D-bevel buttons, Tahoma, no rounded corners.
+   Palette: classic Windows 95/98 system colors. */
+
+QWidget {
+    background-color: #c0c0c0;
+    color: #000000;
+    font-family: "MS Sans Serif", "Tahoma", "Segoe UI", sans-serif;
+    font-size: 11px;
+}
+
+QMainWindow, QDialog {
+    background-color: #c0c0c0;
+}
+
+/* Buttons — raised 3D bevel; reverses to sunken when pressed. */
+QPushButton {
+    background-color: #c0c0c0;
+    color: #000000;
+    border-top: 1px solid #ffffff;
+    border-left: 1px solid #ffffff;
+    border-right: 1px solid #404040;
+    border-bottom: 1px solid #404040;
+    padding: 4px 14px;
+    min-height: 18px;
+    border-radius: 0;
+}
+QPushButton:hover {
+    background-color: #d4d0c8;
+}
+QPushButton:pressed {
+    background-color: #c0c0c0;
+    border-top: 1px solid #404040;
+    border-left: 1px solid #404040;
+    border-right: 1px solid #ffffff;
+    border-bottom: 1px solid #ffffff;
+    padding-top: 5px;
+    padding-bottom: 3px;
+}
+QPushButton:disabled {
+    color: #808080;
+    background-color: #c0c0c0;
+}
+
+QPushButton[role="danger"] {
+    background-color: #c0c0c0;
+    color: #800000;
+    font-weight: bold;
+}
+QPushButton[role="ghost"] {
+    background-color: #c0c0c0;
+    color: #000000;
+}
+
+/* Inputs — sunken 3D bevel, white interior. */
+QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox, QTextEdit, QPlainTextEdit {
+    background-color: #ffffff;
+    color: #000000;
+    border-top: 1px solid #404040;
+    border-left: 1px solid #404040;
+    border-right: 1px solid #ffffff;
+    border-bottom: 1px solid #ffffff;
+    padding: 2px 4px;
+    selection-background-color: #000080;
+    selection-color: #ffffff;
+    border-radius: 0;
+}
+QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus,
+QTextEdit:focus, QPlainTextEdit:focus {
+    border-top: 1px solid #404040;
+    border-left: 1px solid #404040;
+    border-right: 1px solid #ffffff;
+    border-bottom: 1px solid #ffffff;
+}
+
+QLabel { background: transparent; color: #000000; }
+QLabel[role="title"]    { font-size: 14px; font-weight: bold; }
+QLabel[role="subtitle"] { font-size: 11px; color: #404040; }
+QLabel[role="caption"]  { font-size: 10px; color: #404040; }
+
+QScrollArea { border: none; background: transparent; }
+
+/* Cards — classic group panel look (raised bevel). */
+QFrame[role="card"] {
+    background-color: #c0c0c0;
+    border-top: 1px solid #ffffff;
+    border-left: 1px solid #ffffff;
+    border-right: 1px solid #404040;
+    border-bottom: 1px solid #404040;
+    border-radius: 0;
+}
+QFrame[role="card"]:hover {
+    background-color: #d4d0c8;
+}
+
+QFrame[role="card-new"] {
+    background-color: #c0c0c0;
+    border-top: 1px solid #ffffff;
+    border-left: 1px solid #ffffff;
+    border-right: 1px solid #404040;
+    border-bottom: 1px solid #404040;
+    border-radius: 0;
+}
+QFrame[role="card-new"]:hover {
+    background-color: #d4d0c8;
+}
+
+/* GroupBox — classic etched border + title overlay. */
+QGroupBox {
+    background-color: #c0c0c0;
+    border: 1px solid #808080;
+    margin-top: 8px;
+    padding-top: 10px;
+    border-radius: 0;
+}
+QGroupBox::title {
+    subcontrol-origin: margin;
+    left: 8px;
+    padding: 0 4px;
+    background-color: #c0c0c0;
+}
+
+/* Status bar — classic Win9x sunken footer. */
+QStatusBar {
+    background-color: #c0c0c0;
+    border-top: 1px solid #ffffff;
+}
+
+/* Checkbox — Win98 square check with 3D bevel. */
+QCheckBox::indicator {
+    width: 13px; height: 13px;
+    background: #ffffff;
+    border-top: 1px solid #404040;
+    border-left: 1px solid #404040;
+    border-right: 1px solid #ffffff;
+    border-bottom: 1px solid #ffffff;
+}
+QCheckBox::indicator:checked {
+    background: #ffffff;
+    image: none;
+    /* Qt draws its own check glyph; the bevel + white bg are the giveaway */
+}
+
+QComboBox::drop-down {
+    border-left: 1px solid #404040;
+    background: #c0c0c0;
+}
+
+QScrollBar:vertical {
+    background: #c0c0c0;
+    width: 16px;
+    border: 1px solid #808080;
+}
+QScrollBar::handle:vertical {
+    background: #c0c0c0;
+    border-top: 1px solid #ffffff;
+    border-left: 1px solid #ffffff;
+    border-right: 1px solid #404040;
+    border-bottom: 1px solid #404040;
+    min-height: 20px;
+}

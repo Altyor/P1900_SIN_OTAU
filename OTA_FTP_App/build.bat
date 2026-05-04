@@ -22,7 +22,7 @@ pyinstaller ^
     --onefile ^
     --windowed ^
     --name "OTA_FTP_App" ^
-    --add-data "src/ui/styles.qss;ui" ^
+    --add-data "src/ui/themes;ui/themes" ^
     --hidden-import "win32crypt" ^
     src\main.py
 
