@@ -23,6 +23,7 @@ import com.siliconlabs.bledemo.features.scan.browser.models.ScannedDeviceInfo
 import com.siliconlabs.bledemo.features.scan.browser.view_states.GraphFragmentViewState
 import com.siliconlabs.bledemo.features.scan.browser.view_states.ScannerFragmentViewState
 import com.siliconlabs.bledemo.features.scan.rssi_graph.model.GraphPoint
+import com.siliconlabs.bledemo.features.firmware_browser.domain.ScanFilterDefaults
 import com.siliconlabs.bledemo.utils.FilterDeviceParams
 import com.siliconlabs.bledemo.utils.SharedPrefUtils
 import com.siliconlabs.bledemo.utils.StringUtils
@@ -68,7 +69,9 @@ class ScanFragmentViewModel(private val context: Context) : ScannerViewModel() {
     val saveStartEndRSSIRange : MutableLiveData<String> get() = _saveStartEndRSSIRange
 
 
-    private val _sliderValues: MutableLiveData<Pair<Float, Float>> = MutableLiveData<Pair<Float, Float>>(Pair(-40f, 0f)) // Default values for left and right
+    private val _sliderValues: MutableLiveData<Pair<Float, Float>> = MutableLiveData<Pair<Float, Float>>(
+        ScanFilterDefaults.get().let { it.rssiMin to it.rssiMax }
+    )
 
     val sliderValues: MutableLiveData<Pair<Float, Float>> get() = _sliderValues
 

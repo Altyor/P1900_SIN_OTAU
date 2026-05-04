@@ -10,6 +10,7 @@ import androidx.fragment.app.Fragment
 import androidx.lifecycle.ViewModelProvider
 import com.siliconlabs.bledemo.bluetooth.ble.ScanResultCompat
 import com.siliconlabs.bledemo.bluetooth.services.BluetoothService
+import com.siliconlabs.bledemo.features.firmware_browser.domain.ScanFilterDefaults
 import com.siliconlabs.bledemo.features.scan.browser.fragments.FilterFragment
 import com.siliconlabs.bledemo.home_screen.viewmodels.ScanFragmentViewModel
 import com.siliconlabs.bledemo.R
@@ -54,9 +55,13 @@ class ScanFragment : Fragment(), BluetoothService.ScanListener {
 
         observeChanges()
 
-        // Apply default RSSI filter if no filters are set
-        if (viewModel.activeFilters.value == null) {
-            applyDefaultRssiFilter()
+        // Apply scan filter from product config (or factory default until product picked)
+        applyScanFilterFromDefaults()
+
+        // Re-apply + clear scan list whenever the active product's filter changes
+        ScanFilterDefaults.current.observe(viewLifecycleOwner) {
+            viewModel.reset()
+            applyScanFilterFromDefaults()
         }
 
         if (!viewPagerFragment.isAdded) {
@@ -67,17 +72,8 @@ class ScanFragment : Fragment(), BluetoothService.ScanListener {
         }
     }
 
-    private fun applyDefaultRssiFilter() {
-        val defaultFilter = com.siliconlabs.bledemo.utils.FilterDeviceParams(
-            name = "SIN",
-            rssiValue = Pair(-40f, 0f),
-            isRssiFlag = true,
-            bleFormats = emptyList(),
-            isOnlyFavourite = false,
-            isOnlyConnectable = false,
-            isOnlyBonded = false
-        )
-        viewModel.updateFiltering(defaultFilter)
+    private fun applyScanFilterFromDefaults() {
+        viewModel.updateFiltering(ScanFilterDefaults.get().toFilterDeviceParams())
     }
 
     override fun onResume() {

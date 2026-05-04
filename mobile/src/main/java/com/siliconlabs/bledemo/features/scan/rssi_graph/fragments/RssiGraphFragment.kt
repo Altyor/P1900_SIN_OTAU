@@ -242,10 +242,6 @@ class RssiGraphFragment : BaseServiceDependentMainMenuFragment() {
 
     override fun onOptionsItemSelected(item: MenuItem): Boolean {
         return when (item.itemId) {
-            R.id.rssi_filter_icon -> {
-                getScanFragment().toggleFilterFragment(shouldShowFilterFragment = true)
-                true
-            }
             R.id.rssi_sort_icon -> {
                 viewModel.sortDevices()
                 labelAdapter.updateLabels(viewModel.getLabelViewsState())

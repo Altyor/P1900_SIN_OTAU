@@ -1,10 +1,12 @@
 package com.siliconlabs.bledemo.features.firmware_browser.data
 
 import android.util.Log
+import com.siliconlabs.bledemo.bluetooth.beacon_utils.BleFormat
 import com.siliconlabs.bledemo.features.firmware_browser.domain.CardType
 import com.siliconlabs.bledemo.features.firmware_browser.domain.FirmwareValidation
 import com.siliconlabs.bledemo.features.firmware_browser.domain.PnInfo
 import com.siliconlabs.bledemo.features.firmware_browser.domain.ProductInfo
+import com.siliconlabs.bledemo.features.firmware_browser.domain.ScanFilterConfig
 import com.siliconlabs.bledemo.features.firmware_browser.domain.SftpConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -197,22 +199,69 @@ class SftpRepositoryImpl : SftpRepository {
     }
 
     private fun parseConfigIni(lines: List<String>): FirmwareValidation {
-        val props = mutableMapOf<String, String>()
+        val sections = mutableMapOf<String, MutableMap<String, String>>()
+        var currentSection = ""
         for (line in lines) {
             val trimmed = line.trim()
-            if (trimmed.isEmpty() || trimmed.startsWith("[") || trimmed.startsWith("#")) continue
+            if (trimmed.isEmpty() || trimmed.startsWith("#")) continue
+            if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
+                currentSection = trimmed.substring(1, trimmed.length - 1).trim()
+                sections.getOrPut(currentSection) { mutableMapOf() }
+                continue
+            }
             val eqIndex = trimmed.indexOf('=')
             if (eqIndex > 0) {
                 val key = trimmed.substring(0, eqIndex).trim()
                 val value = trimmed.substring(eqIndex + 1).trim()
-                props[key] = value
+                sections.getOrPut(currentSection) { mutableMapOf() }[key] = value
             }
         }
+        val v = sections["validation"] ?: emptyMap()
+        // Missing [after_*] section → null → caller falls back to "validate everything" (legacy behavior).
+        // Present-but-empty `check=` → empty set → validate nothing for that scenario.
+        fun parseChecks(name: String): Set<String>? {
+            val section = sections[name] ?: return null
+            return section["check"]
+                ?.split(",")
+                ?.map { it.trim() }
+                ?.filter { it.isNotEmpty() }
+                ?.toSet()
+                ?: emptySet()
+        }
         return FirmwareValidation(
-            preModel = props["pre_model"] ?: "",
-            postModel = props["post_model"] ?: "",
-            antennaVersion = props["antenna_version"] ?: "",
-            powerVersion = props["power_version"] ?: ""
+            preModel = v["pre_model"] ?: "",
+            postModel = v["post_model"] ?: "",
+            antennaVersion = v["antenna_version"] ?: "",
+            powerVersion = v["power_version"] ?: "",
+            afterAntenna = parseChecks("after_antenna"),
+            afterPower = parseChecks("after_power"),
+            afterBoth = parseChecks("after_both"),
+            scanFilter = parseScanFilter(sections["scan_filter"]),
+        )
+    }
+
+    private fun parseScanFilter(section: Map<String, String>?): ScanFilterConfig? {
+        if (section == null) return null
+        fun bool(key: String, default: Boolean): Boolean =
+            section[key]?.lowercase()?.let { it == "true" || it == "1" || it == "yes" } ?: default
+        fun float(key: String, default: Float): Float =
+            section[key]?.toFloatOrNull() ?: default
+        val formats = section["ble_formats"]
+            ?.split(",")
+            ?.map { it.trim() }
+            ?.filter { it.isNotEmpty() }
+            ?.mapNotNull { token ->
+                runCatching { BleFormat.valueOf(token.uppercase()) }.getOrNull()
+            }
+            ?: emptyList()
+        return ScanFilterConfig(
+            name = section["name"]?.takeIf { it.isNotEmpty() },
+            rssiMin = float("rssi_min", -40f),
+            rssiMax = float("rssi_max", 0f),
+            bleFormats = formats,
+            onlyConnectable = bool("only_connectable", false),
+            onlyBonded = bool("only_bonded", false),
+            onlyFavourite = bool("only_favourite", false),
         )
     }
 }

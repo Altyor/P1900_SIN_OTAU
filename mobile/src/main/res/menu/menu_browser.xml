@@ -8,13 +8,6 @@
         app:showAsAction="ifRoom" />
 
     <item
-        android:id="@+id/menu_filter"
-        android:icon="@drawable/redesign_ic_menu_scanner_filter"
-        app:iconTint="@color/menu_icon"
-        android:title="@string/filter_menu_icon"
-        app:showAsAction="ifRoom" />
-
-    <item
         android:id="@+id/menu_sort"
         android:icon="@drawable/redesign_ic_menu_scanner_sort"
         app:iconTint="@color/menu_icon"

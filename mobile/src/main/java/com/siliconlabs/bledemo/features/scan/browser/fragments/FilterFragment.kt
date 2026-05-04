@@ -9,6 +9,7 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.updateLayoutParams
 import androidx.fragment.app.DialogFragment
 import com.siliconlabs.bledemo.bluetooth.beacon_utils.BleFormat
+import com.siliconlabs.bledemo.features.firmware_browser.domain.ScanFilterDefaults
 import com.siliconlabs.bledemo.home_screen.viewmodels.ScanFragmentViewModel
 import com.siliconlabs.bledemo.R
 import com.siliconlabs.bledemo.databinding.FragmentFilterBinding
@@ -134,13 +135,14 @@ class FilterFragment : DialogFragment() {
             seekControlBar.max = resources.getInteger(R.integer.rssi_value_range)
             seekControlBar.progress = 0
 
-            // Initialize with default RSSI range (-40 to 0 dBm)
+            // Initialize with default RSSI range from active product config (or factory)
             val format = getString(R.string.n_dBm)
-            val defaultText = "(${String.format(format, -40)}, ${String.format(format, 0)})"
+            val defaults = ScanFilterDefaults.get()
+            val defaultText = "(${String.format(format, defaults.rssiMin.toInt())}, ${String.format(format, defaults.rssiMax.toInt())})"
             seekControlText.text = defaultText
             viewModel.saveStartEndRssiRange(defaultText)
-            viewModel.updateOverallProgress(-40f, 0f)
-            viewModel.saveRSSISlideRValues(-40f, 0f)
+            viewModel.updateOverallProgress(defaults.rssiMin, defaults.rssiMax)
+            viewModel.saveRSSISlideRValues(defaults.rssiMin, defaults.rssiMax)
 
             // Add a label formatter to show the tooltip text with the slider value
             slider.setLabelFormatter { value ->
@@ -183,26 +185,24 @@ class FilterFragment : DialogFragment() {
 
     private fun resetFilters() {
         viewBinding.apply {
-            etSearchDeviceName.setText("SIN")  // Default search filter for SIN devices
+            val defaults = ScanFilterDefaults.get()
+            etSearchDeviceName.setText(defaults.name ?: "")
             seekBarRssi.seekControlBar.progress = 0
-            rssiFlag = true  // Keep RSSI filter active by default
+            rssiFlag = true
 
-            // Set default RSSI range text (-40 to 0 dBm)
             val format = getString(R.string.n_dBm)
-            val defaultText = "(${String.format(format, -40)}, ${String.format(format, 0)})"
+            val defaultText = "(${String.format(format, defaults.rssiMin.toInt())}, ${String.format(format, defaults.rssiMax.toInt())})"
             viewModel.saveStartEndRssiRange(defaultText)
             viewModel.saveStartEndRSSIRange.observe(viewLifecycleOwner, androidx.lifecycle.Observer {
                 seekBarRssi.seekControlText.text = it
             })
 
-
             clearCheckBoxes()
-            cbOnlyConnectable.isChecked = false
-            cbOnlyBonded.isChecked = false
-            cbOnlyFavourites.isChecked = false
-            //UPDATE THE OVER ALL PROGRESS TO DEFAULT (-40 to 0)
-            viewModel.updateOverallProgress(-40f,0f)
-            viewModel.saveRSSISlideRValues(-40f,0f)
+            cbOnlyConnectable.isChecked = defaults.onlyConnectable
+            cbOnlyBonded.isChecked = defaults.onlyBonded
+            cbOnlyFavourites.isChecked = defaults.onlyFavourite
+            viewModel.updateOverallProgress(defaults.rssiMin, defaults.rssiMax)
+            viewModel.saveRSSISlideRValues(defaults.rssiMin, defaults.rssiMax)
             viewModel.sliderValues.observe(viewLifecycleOwner, androidx.lifecycle.Observer {
                 seekBarRssi.slider.setValues(it.first,it.second)
 

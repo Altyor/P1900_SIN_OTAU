@@ -10,13 +10,6 @@
         app:showAsAction="ifRoom" />
 
     <item
-        android:id="@+id/rssi_filter_icon"
-        android:title="@string/button_filter"
-        android:icon="@drawable/redesign_ic_menu_scanner_filter"
-        app:iconTint="@color/menu_icon"
-        app:showAsAction="ifRoom" />
-
-    <item
         android:id="@+id/rssi_sort_icon"
         android:title="@string/button_sort"
         android:icon="@drawable/redesign_ic_menu_scanner_sort"

@@ -9,6 +9,8 @@ import com.siliconlabs.bledemo.features.firmware_browser.domain.FirmwareSelectio
 import com.siliconlabs.bledemo.features.firmware_browser.domain.PnInfo
 import com.siliconlabs.bledemo.features.firmware_browser.domain.SftpConfig
 import com.siliconlabs.bledemo.features.firmware_browser.domain.ProductInfo
+import com.siliconlabs.bledemo.features.firmware_browser.domain.ScanFilterConfig
+import com.siliconlabs.bledemo.features.firmware_browser.domain.ScanFilterDefaults
 import com.siliconlabs.bledemo.features.firmware_browser.domain.SecretsManager
 import com.siliconlabs.bledemo.features.firmware_browser.domain.UiStrings
 import com.siliconlabs.bledemo.features.scan.browser.activities.DeviceServicesActivity
@@ -121,6 +123,7 @@ class FirmwareBrowserViewModel @Inject constructor(
                 )
                 return@launch
             }
+            ScanFilterDefaults.set(validation.scanFilter ?: ScanFilterConfig.FACTORY)
 
             if (cardType == CardType.BOTH) {
                 // Download antenna first

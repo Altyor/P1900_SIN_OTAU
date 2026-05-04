@@ -90,6 +90,12 @@ class DeviceServicesActivity : BaseActivity() {
     // FW version string over the same connection.
     private var postOtaColdReconnectPending = false
     private var postOtaColdReconnectDone = false
+    // Persistent-log bookkeeping: otaWasRun is set when an OTA was actually
+    // launched in this session (so a normal connect to a healthy device
+    // doesn't trigger a "success" / "failed" mark). otaResultRecorded keeps
+    // checkAllVersionsMatch from firing markOtaSuccess/Failed multiple times.
+    private var otaWasRun = false
+    private var otaResultRecorded = false
     private var discoveryPending = false
     private var mtuReadType = MtuReadType.VIEW_INITIALIZATION
     private var isLogFragmentOn = false
@@ -359,6 +365,13 @@ class DeviceServicesActivity : BaseActivity() {
                                 }
                                 else -> {
                                     Log.e("OTA_DEBUG", "Unexpected disconnection in IDLE state: status=$status")
+                                    if (otaInProgress) {
+                                        com.siliconlabs.bledemo.features.firmware_browser.domain.OtaFileLogger
+                                            .markOtaFailed(
+                                                "Unexpected disconnection in IDLE state: status=$status",
+                                                bluetoothGatt?.device?.address ?: bluetoothDevice?.address
+                                            )
+                                    }
                                     showLongMessage(
                                         ErrorCodes.getDeviceDisconnectedMessage(
                                             getDeviceName(),
@@ -1209,6 +1222,15 @@ class DeviceServicesActivity : BaseActivity() {
 
     private fun startDirectOta() {
         Log.d("OTA_DEBUG", "Starting direct OTA with file: $globalOtaFileName")
+        // Truncate persistent OTA log only at the start of a *new* upload.
+        // The retry path also re-enters startDirectOta but we don't want to
+        // wipe the log mid-OTA; gate on otaInProgress.
+        if (!otaInProgress) {
+            com.siliconlabs.bledemo.features.firmware_browser.domain.OtaFileLogger
+                .markOtaStarted()
+            otaWasRun = true
+            otaResultRecorded = false
+        }
         otaInProgress = true
 
         if (viewState == ViewState.IDLE) {
@@ -2338,6 +2360,8 @@ class DeviceServicesActivity : BaseActivity() {
         characteristicDumpDone = false
         postOtaColdReconnectPending = false
         postOtaColdReconnectDone = false
+        otaWasRun = false
+        otaResultRecorded = false
         Log.d("OTA_DEBUG", "OTA state reset for new device session (cardType=${selection.cardType}, pendingSecondOta=${selection.pendingSecondOta})")
     }
 
@@ -2447,11 +2471,19 @@ class DeviceServicesActivity : BaseActivity() {
             val antenna = firmwareVersionAntenna
             val power = firmwareVersionPower
 
+            val cardType = com.siliconlabs.bledemo.features.firmware_browser.domain.FirmwareSelection.cardType
+            val checks = validation.fieldsToCheck(cardType)
+
             val expectedModel = if (otaCompleted) validation.postModel else validation.preModel
-            val modelMatch = model == expectedModel
-            val antennaMatch = antenna != null && antenna == validation.antennaVersion
-            val powerMatch = if (validation.powerVersion.isEmpty()) true
-                else power != null && power == validation.powerVersion
+            // Pre-OTA: gate on pre_model (device must be in starting state).
+            // Post-OTA: only require post_model match if this scenario validates it.
+            val modelMatch = if (otaCompleted) "post_model" !in checks || model == expectedModel
+                             else model == expectedModel
+            val antennaMatch = "antenna_version" !in checks ||
+                (antenna != null && antenna == validation.antennaVersion)
+            val powerMatch = "power_version" !in checks ||
+                validation.powerVersion.isEmpty() ||
+                (power != null && power == validation.powerVersion)
 
             if (modelMatch && antennaMatch && powerMatch && !otaCompleted) {
                 // All versions already match — no OTA needed
@@ -2465,6 +2497,26 @@ class DeviceServicesActivity : BaseActivity() {
                 binding.tvOperatorStatus.setTextColor(
                     ContextCompat.getColor(this, R.color.silabs_green)
                 )
+            }
+
+            // Persistent-log lifecycle: when an OTA we just ran is verified
+            // good (post-OTA reads match expected versions), discard the log.
+            // If we ran an OTA but the post-OTA reads don't match (silent
+            // Apploader rollback), preserve it for diagnostics.
+            if (otaCompleted && !otaResultRecorded && otaWasRun) {
+                if (modelMatch && antennaMatch && powerMatch) {
+                    com.siliconlabs.bledemo.features.firmware_browser.domain.OtaFileLogger
+                        .markOtaSuccess()
+                } else {
+                    com.siliconlabs.bledemo.features.firmware_browser.domain.OtaFileLogger
+                        .markOtaFailed(
+                            "Post-OTA verify mismatch: model=$model/$expectedModel " +
+                            "antenna=$antenna/${validation.antennaVersion} " +
+                            "power=$power/${validation.powerVersion}",
+                            bluetoothGatt?.device?.address ?: bluetoothDevice?.address
+                        )
+                }
+                otaResultRecorded = true
             }
         }
     }
@@ -2521,6 +2573,11 @@ class DeviceServicesActivity : BaseActivity() {
         } else {
             Log.e("OTA_DEBUG", "Max OTA retries ($MAX_OTA_RETRIES) exceeded")
             otaInProgress = false
+            com.siliconlabs.bledemo.features.firmware_browser.domain.OtaFileLogger
+                .markOtaFailed(
+                    "Max OTA retries ($MAX_OTA_RETRIES) exceeded",
+                    bluetoothGatt?.device?.address ?: bluetoothDevice?.address
+                )
             val strings = com.siliconlabs.bledemo.features.firmware_browser.domain.UiStrings
             runOnUiThread {
                 showOtaWaitingOverlay(
@@ -2593,26 +2650,19 @@ class DeviceServicesActivity : BaseActivity() {
             stopElapsedTimer()
             binding.ivNodonSpinning.clearAnimation()
 
-            // Only check versions that were actually updated
+            // Only check fields specified by config.ini's [after_X] section for this OTA scenario
             val validation = selectedValidation
             val model = modelNumber ?: ""
             val selection = com.siliconlabs.bledemo.features.firmware_browser.domain.FirmwareSelection
             val cardType = selection.cardType
             val allMatch = if (validation != null) {
-                val modelOk = model == validation.postModel
-                val antennaOk = when (cardType) {
-                    com.siliconlabs.bledemo.features.firmware_browser.domain.CardType.ANTENNA,
-                    com.siliconlabs.bledemo.features.firmware_browser.domain.CardType.BOTH ->
-                        firmwareVersionAntenna != null && firmwareVersionAntenna == validation.antennaVersion
-                    else -> true // Power-only: don't check antenna
-                }
-                val powerOk = when (cardType) {
-                    com.siliconlabs.bledemo.features.firmware_browser.domain.CardType.POWER,
-                    com.siliconlabs.bledemo.features.firmware_browser.domain.CardType.BOTH ->
-                        if (validation.powerVersion.isEmpty()) true
-                        else firmwareVersionPower != null && firmwareVersionPower == validation.powerVersion
-                    else -> true // Antenna-only: don't check power
-                }
+                val checks = validation.fieldsToCheck(cardType)
+                val modelOk = "post_model" !in checks || model == validation.postModel
+                val antennaOk = "antenna_version" !in checks ||
+                    (firmwareVersionAntenna != null && firmwareVersionAntenna == validation.antennaVersion)
+                val powerOk = "power_version" !in checks ||
+                    validation.powerVersion.isEmpty() ||
+                    (firmwareVersionPower != null && firmwareVersionPower == validation.powerVersion)
                 modelOk && antennaOk && powerOk
             } else true
 

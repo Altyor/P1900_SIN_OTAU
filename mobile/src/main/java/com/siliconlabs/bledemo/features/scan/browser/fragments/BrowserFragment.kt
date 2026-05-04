@@ -403,10 +403,6 @@ class BrowserFragment : BaseServiceDependentMainMenuFragment(),
 
     override fun onOptionsItemSelected(item: MenuItem): Boolean {
         return when (item.itemId) {
-            R.id.menu_filter -> {
-                getScanFragment().toggleFilterFragment(shouldShowFilterFragment = true)
-                true
-            }
             R.id.menu_sort -> {
                 viewModel.let { model ->
                     devicesAdapter?.let { adapter ->

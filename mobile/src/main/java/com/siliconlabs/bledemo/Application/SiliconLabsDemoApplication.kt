@@ -34,6 +34,10 @@ class SiliconLabsDemoApplication : Application() {
 
         // Load encrypted secrets (SFTP credentials, etc.)
         com.siliconlabs.bledemo.features.firmware_browser.domain.SecretsManager.load(this)
+
+        // Start mirroring OTA_DEBUG / CHAR_DUMP log tags to a persistent file
+        // so production failures can be inspected after the fact.
+        com.siliconlabs.bledemo.features.firmware_browser.domain.OtaFileLogger.start(this)
     }
 
     private fun registerActivityLifecycle() {
