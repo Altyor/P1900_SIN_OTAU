@@ -1,0 +1,86 @@
+/* Dark theme — palette aligned with Relay_Toggler / VS Code dark. */
+QWidget {
+    background-color: #1e1e1e;
+    color: #d4d4d4;
+    font-family: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+    font-size: 13px;
+}
+
+QMainWindow, QDialog {
+    background-color: #1e1e1e;
+}
+
+QPushButton {
+    background-color: #094771;
+    color: #ffffff;
+    border: 1px solid #0a5a8a;
+    border-radius: 4px;
+    padding: 6px 14px;
+    min-height: 22px;
+}
+QPushButton:hover { background-color: #0a5a8a; }
+QPushButton:pressed { background-color: #073354; }
+QPushButton:disabled { background-color: #2a2a2a; color: #666666; border-color: #333; }
+
+QPushButton[role="danger"] {
+    background-color: #802020;
+    border-color: #a02828;
+}
+QPushButton[role="danger"]:hover { background-color: #a02828; }
+
+QPushButton[role="ghost"] {
+    background-color: transparent;
+    border: 1px solid #555;
+    color: #d4d4d4;
+}
+QPushButton[role="ghost"]:hover { background-color: #2a2a2a; }
+
+QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox, QTextEdit, QPlainTextEdit {
+    background-color: #252526;
+    color: #d4d4d4;
+    border: 1px solid #3c3c3c;
+    border-radius: 3px;
+    padding: 4px 6px;
+    selection-background-color: #094771;
+}
+QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus,
+QTextEdit:focus, QPlainTextEdit:focus { border-color: #0a5a8a; }
+
+QLabel { background: transparent; }
+QLabel[role="title"] { font-size: 18px; font-weight: 600; }
+QLabel[role="subtitle"] { font-size: 14px; color: #9c9c9c; }
+QLabel[role="caption"] { font-size: 11px; color: #888; }
+
+QScrollArea { border: none; background: transparent; }
+
+QFrame[role="card"] {
+    background-color: #252526;
+    border: 1px solid #3c3c3c;
+    border-radius: 6px;
+}
+QFrame[role="card"]:hover {
+    border: 1px solid #0a5a8a;
+}
+
+QFrame[role="card-new"] {
+    background-color: #1f2733;
+    border: 2px dashed #0a5a8a;
+    border-radius: 6px;
+}
+QFrame[role="card-new"]:hover { background-color: #25303f; }
+
+QGroupBox {
+    border: 1px solid #3c3c3c;
+    border-radius: 4px;
+    margin-top: 10px;
+    padding-top: 10px;
+}
+QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 4px; }
+
+QCheckBox::indicator {
+    width: 16px; height: 16px;
+    border: 1px solid #555;
+    background: #252526;
+    border-radius: 2px;
+}
+QCheckBox::indicator:checked { background: #0a5a8a; border-color: #0a5a8a; }

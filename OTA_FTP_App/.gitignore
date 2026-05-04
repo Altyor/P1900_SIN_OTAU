@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+
+# Virtual env
+.venv/
+venv/
+
+# PyInstaller artefacts
+build/
+dist/
+*.spec
+
+# Editor
+.vscode/
+.idea/
+
+# Secrets — must never be committed.
+# secrets.ini is the operator-drop file (encrypted on first launch).
+# secrets.bin lives in %APPDATA%, but if anyone copies it next to the EXE
+# during dev, ignore it here too.
+secrets.ini
+secrets.bin

@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ota-ftp-app"
+version = "0.1.0"
+description = "GUI for managing the OTA SFTP server"
+requires-python = ">=3.10"
+dependencies = [
+    "PyQt6>=6.5.0",
+    "paramiko>=3.4.0",
+    "pywin32>=306; platform_system == 'Windows'",
+    "Pillow>=10.0.0",
+    "cryptography>=41.0.0",
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
