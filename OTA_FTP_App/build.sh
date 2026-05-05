@@ -24,9 +24,10 @@ echo "Building..."
 pyinstaller \
     --onefile \
     --windowed \
+    --clean \
     --name "OTA_FTP_App" \
     --add-data "src/ui/themes:ui/themes" \
-    src/main.py
+    run.py
 
 echo
 case "$(uname -s)" in

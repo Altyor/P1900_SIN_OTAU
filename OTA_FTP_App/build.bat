@@ -21,10 +21,11 @@ echo Building...
 pyinstaller ^
     --onefile ^
     --windowed ^
+    --clean ^
     --name "OTA_FTP_App" ^
     --add-data "src/ui/themes;ui/themes" ^
     --hidden-import "win32crypt" ^
-    src\main.py
+    run.py
 
 echo.
 echo Build complete. EXE at: dist\OTA_FTP_App.exe

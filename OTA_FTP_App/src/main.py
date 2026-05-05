@@ -64,13 +64,23 @@ def _exe_dir() -> Path:
 
 
 def _load_secrets():
-    """Load encrypted secrets, importing from secrets.ini next to the EXE on first run.
+    """Load encrypted secrets, importing from secrets.ini in APPDATA on first run.
+
+    `secrets.ini` (plaintext) is expected at:
+        %APPDATA%\\P1900_Production_Manager\\secrets.ini
+    The app reads it on first launch, encrypts to `secrets.bin` in the same
+    folder via DPAPI, and securely deletes the plaintext.
+
+    This per-user APPDATA lookup (rather than next-to-the-EXE) is what lets
+    the EXE live on a shared network drive while each user has their own
+    machine/account-bound credentials.
 
     Returns the loaded SecretLoader, or None on failure (caller shows a dialog).
     """
+    appdata = _appdata_dir()
     loader = SecretLoader(
-        config_dir=_exe_dir(),       # secrets.ini is dropped here
-        bin_dir=_appdata_dir(),       # secrets.bin lives in APPDATA
+        config_dir=appdata,           # secrets.ini is dropped here (per-user)
+        bin_dir=appdata,               # secrets.bin lives in the same place
         filename=SECRETS_BASENAME,
     )
     try:
@@ -82,7 +92,7 @@ def _load_secrets():
         QMessageBox.warning(
             None,
             "Secrets manquants",
-            f"Aucun secret chargé. Déposez `secrets.ini` à côté de l'application :\n\n{_exe_dir()}",
+            f"Aucun secret chargé. Déposez `secrets.ini` dans :\n\n{appdata}",
         )
         return None
     return loader
@@ -106,9 +116,20 @@ def _build_repo(loader: SecretLoader) -> ProductRepo:
 THEMES = ("dark", "win98")
 
 
+def _resources_root() -> Path:
+    """Where ui/themes/*.qss live at runtime.
+
+    - Dev (`python -m src.main`): files sit next to this module → src/ui/themes/.
+    - PyInstaller --onefile: files were added with `--add-data src/ui/themes;ui/themes`
+      so they're at <_MEIPASS>/ui/themes/. _MEIPASS is set on the frozen process."""
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        return Path(sys._MEIPASS)
+    return Path(__file__).parent
+
+
 def load_theme(name: str) -> str:
     """Read a theme's QSS by name. Returns '' if the file is missing."""
-    qss_path = Path(__file__).parent / "ui" / "themes" / f"{name}.qss"
+    qss_path = _resources_root() / "ui" / "themes" / f"{name}.qss"
     if qss_path.exists():
         return qss_path.read_text(encoding="utf-8")
     return ""
