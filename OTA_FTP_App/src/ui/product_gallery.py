@@ -13,7 +13,10 @@ from __future__ import annotations
 from typing import Dict, List, Optional
 
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QScrollArea, QGridLayout, QFrame
+from PyQt6.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QScrollArea,
+    QGridLayout, QFrame, QLineEdit
+)
 
 from ..sftp.product_repo import ProductRepo, ProductSummary
 from ..util.image_cache import ImageCache
@@ -80,6 +83,7 @@ class ProductGallery(QWidget):
     new_product_clicked = pyqtSignal()
     refresh_clicked = pyqtSignal()
     root_change_requested = pyqtSignal(str)
+    help_clicked = pyqtSignal()
     status_changed = pyqtSignal(str)  # for /production/ ↔ /deposit/ toggle
 
     def __init__(self, repo: ProductRepo, image_cache: ImageCache):
@@ -117,7 +121,19 @@ class ProductGallery(QWidget):
         self.refresh_btn.setProperty("role", "ghost")
         self.refresh_btn.clicked.connect(self.refresh_clicked.emit)
         header.addWidget(self.refresh_btn)
+
+        self.help_btn = QPushButton("Aide")
+        self.help_btn.setProperty("role", "ghost")
+        self.help_btn.clicked.connect(self.help_clicked.emit)
+        header.addWidget(self.help_btn)
         outer.addLayout(header)
+
+        # Search bar — live-filters cards by name (case-insensitive substring).
+        self.search = QLineEdit()
+        self.search.setPlaceholderText("Filtrer par nom… (Esc pour effacer)")
+        self.search.setClearButtonEnabled(True)
+        self.search.textChanged.connect(self._apply_filter)
+        outer.addWidget(self.search)
 
         self.status_label = QLabel("Chargement…")
         self.status_label.setProperty("role", "subtitle")
@@ -197,6 +213,25 @@ class ProductGallery(QWidget):
                 f"Images : {self._loaded_image_count}/{self._total_with_images}"
             )
 
+    # ------- search filter -------
+
+    def _apply_filter(self, text: str) -> None:
+        """Re-pack the grid with only cards whose name matches the search.
+        Non-matching cards are detached from the layout so the visible cards
+        stay tightly packed (no empty cells)."""
+        visible = self._layout_grid()
+        needle = text.strip().lower()
+        if needle:
+            self.status_label.setText(f"{visible} produit(s) correspondent à « {text} »")
+        else:
+            self.status_label.setText(f"{len(self._cards_by_name)} produit(s)")
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key.Key_Escape and self.search.text():
+            self.search.clear()
+            return
+        super().keyPressEvent(event)
+
     def _on_done(self) -> None:
         msg = f"{len(self._summaries)} produit(s) — prêt"
         self.status_label.setText(msg)
@@ -216,28 +251,59 @@ class ProductGallery(QWidget):
                 w.setParent(None)
 
     def _render_placeholders(self, names: List[str]) -> None:
-        """Lay out the grid with placeholder cards (name only). Configs + images
-        fill in afterwards via set_summary / set_image."""
+        """Build the placeholder cards once. Layout (column count + filter)
+        is applied via _layout_grid so subsequent re-flows are cheap."""
         self._clear_grid()
         self._cards_by_name.clear()
-        cols = self._compute_columns()
-        self._current_cols = cols
-        new_card = NewProductCard()
-        new_card.clicked.connect(self.new_product_clicked.emit)
-        self.grid.addWidget(new_card, 0, 0)
+        # Keep the "+ Ajouter" tile around so we can re-place it on filter / resize.
+        self._new_card = NewProductCard()
+        self._new_card.clicked.connect(self.new_product_clicked.emit)
 
-        idx = 1
         for name in names:
-            row, col = divmod(idx, cols)
             placeholder = ProductSummary(
                 name=name, has_image=True, config_text=None,
                 validation=None, has_pn_subfolder=False,
             )
             card = ProductCard(placeholder, image_bytes=None)
             card.clicked.connect(self.product_clicked.emit)
-            self.grid.addWidget(card, row, col)
             self._cards_by_name[name] = card
-            idx += 1
+
+        self._layout_grid()
+
+    def _layout_grid(self) -> None:
+        """Re-place every card in the grid based on the current filter +
+        column count. Hidden cards are detached from the layout (no empty
+        cells) but kept alive for when the filter clears."""
+        # Detach everything from the grid without destroying widgets.
+        while self.grid.count():
+            self.grid.takeAt(0)
+
+        cols = self._compute_columns()
+        self._current_cols = cols
+        needle = self.search.text().strip().lower() if hasattr(self, "search") else ""
+
+        # "+ Ajouter" is always first, regardless of filter.
+        if hasattr(self, "_new_card") and self._new_card is not None:
+            self.grid.addWidget(self._new_card, 0, 0)
+            self._new_card.setVisible(True)
+            idx = 1
+        else:
+            idx = 0
+
+        visible_count = 0
+        for name, card in self._cards_by_name.items():
+            match = (needle in name.lower()) if needle else True
+            if match:
+                row, col = divmod(idx, cols)
+                self.grid.addWidget(card, row, col)
+                card.setVisible(True)
+                idx += 1
+                visible_count += 1
+            else:
+                # Detached + hidden — preserved for when the filter clears.
+                card.setParent(self.grid_host)
+                card.setVisible(False)
+        return visible_count
 
     # ------- responsive reflow -------
 
@@ -254,20 +320,14 @@ class ProductGallery(QWidget):
 
     def _relayout(self) -> None:
         new_cols = self._compute_columns()
-        if new_cols == self._current_cols or self.grid.count() == 0:
+        if new_cols == self._current_cols:
+            return
+        if not self._cards_by_name:
             self._current_cols = new_cols
             return
-        self._current_cols = new_cols
-        # Collect widgets in current order, then re-place them with new column count
-        widgets = []
-        while self.grid.count():
-            item = self.grid.takeAt(0)
-            w = item.widget()
-            if w is not None:
-                widgets.append(w)
-        for idx, w in enumerate(widgets):
-            row, col = divmod(idx, new_cols)
-            self.grid.addWidget(w, row, col)
+        # Re-flow through the same path the filter uses, so resizing also
+        # respects the active filter (otherwise hidden cards would reappear).
+        self._layout_grid()
 
     def resizeEvent(self, event):
         super().resizeEvent(event)

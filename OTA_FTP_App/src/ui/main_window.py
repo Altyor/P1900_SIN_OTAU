@@ -18,6 +18,7 @@ from .config_editor import ConfigEditorDialog
 from .new_product_wizard import NewProductWizard
 from .add_variant_wizard import AddVariantWizard
 from .replace_fw_dialog import ReplaceFirmwareDialog
+from .about_dialog import AboutDialog, APP_NAME, APP_VERSION
 
 
 class _DeleteWorker(QThread):
@@ -54,7 +55,7 @@ class MainWindow(QMainWindow):
         self.image_cache = image_cache
         self.settings = settings
         self._initial_theme = initial_theme
-        self.setWindowTitle("OTA FTP App")
+        self.setWindowTitle(f"{APP_NAME}  v{APP_VERSION}")
         self.resize(1100, 760)
 
         self.stack = QStackedWidget()
@@ -70,6 +71,7 @@ class MainWindow(QMainWindow):
         self.gallery.new_product_clicked.connect(self._open_wizard)
         self.gallery.refresh_clicked.connect(self.gallery.refresh)
         self.gallery.root_change_requested.connect(self.gallery.update_root)
+        self.gallery.help_clicked.connect(self._open_help)
         self.gallery.status_changed.connect(self._set_status)
         self.stack.addWidget(self.gallery)
 
@@ -108,6 +110,20 @@ class MainWindow(QMainWindow):
 
     def _set_status(self, msg: str) -> None:
         self.status_bar.showMessage(msg)
+
+    def _open_help(self) -> None:
+        sftp_summary = (
+            f"{self.repo.cli.username}@{self.repo.cli.host}:{self.repo.cli.port}\n"
+            f"Racine active : {self.repo.root}"
+        )
+        dlg = AboutDialog(
+            secrets_path=self.settings.path.with_name("secrets.bin"),
+            image_cache_path=self.image_cache.dir,
+            settings_path=self.settings.path,
+            sftp_summary=sftp_summary,
+            parent=self,
+        )
+        dlg.exec()
 
     def _show_gallery(self) -> None:
         self.stack.setCurrentWidget(self.gallery)
@@ -264,8 +280,13 @@ class MainWindow(QMainWindow):
         if detail is None or detail.name != name:
             QMessageBox.information(self, "Patientez", "Configuration encore en cours de chargement…")
             return
-        dlg = ConfigEditorDialog(self.repo, name, detail.validation, detail.config_text,
-                                  pn_name=detail.pn_name, parent=self)
+        dlg = ConfigEditorDialog(
+            self.repo, name, detail.validation, detail.config_text,
+            pn_name=detail.pn_name,
+            has_antenna_fw=bool(detail.antenna_files),
+            has_power_fw=bool(detail.power_files),
+            parent=self,
+        )
         if dlg.exec():
             self.detail.load(name, pn_name=detail.pn_name)
 
