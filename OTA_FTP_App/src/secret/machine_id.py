@@ -4,7 +4,8 @@ Génère une empreinte unique basée sur le hardware (hors périphériques USB)
 
 IDs utilisés:
 - Windows: UUID système, numéro de série carte mère, ID processeur, numéro de série BIOS
-- Linux: /etc/machine-id, product_uuid (si accessible)
+- Linux  : /etc/machine-id, product_uuid (si accessible)
+- macOS  : IOPlatformUUID, IOPlatformSerialNumber (via ioreg)
 """
 
 import hashlib
@@ -20,6 +21,7 @@ logger = logging.getLogger("MachineID")
 # Détection du système d'exploitation
 IS_WINDOWS = platform.system() == "Windows"
 IS_LINUX = platform.system() == "Linux"
+IS_MACOS = platform.system() == "Darwin"
 
 
 def _run_wmic_command(command: str) -> Optional[str]:
@@ -176,6 +178,63 @@ def get_linux_board_serial() -> Optional[str]:
     return None
 
 
+# =============================================================================
+# Fonctions macOS
+# =============================================================================
+
+def _run_ioreg_lookup(key: str) -> Optional[str]:
+    """Run `ioreg -d2 -c IOPlatformExpertDevice` and parse out one named field.
+
+    The output looks like:
+        | |   "IOPlatformUUID" = "ABCD-1234-..."
+        | |   "IOPlatformSerialNumber" = "C02XYZ123ABC"
+    Both values are tied to the physical machine (set at the factory; survive
+    OS reinstall), so they're a good source of entropy on macOS — same role
+    as DMI fields on Linux or WMIC csproduct on Windows.
+    """
+    if not IS_MACOS:
+        return None
+    try:
+        result = subprocess.run(
+            ["ioreg", "-d2", "-c", "IOPlatformExpertDevice"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode != 0:
+            return None
+        for line in result.stdout.splitlines():
+            stripped = line.strip()
+            if f'"{key}"' in stripped and "=" in stripped:
+                _, _, value = stripped.partition("=")
+                return value.strip().strip('"')
+    except Exception as e:
+        logger.debug(f"ioreg lookup failed for {key}: {e}")
+    return None
+
+
+def get_macos_platform_uuid() -> Optional[str]:
+    """IOPlatformUUID — system UUID (factory-assigned, hardware-bound)."""
+    if not IS_MACOS:
+        return None
+    v = _run_ioreg_lookup("IOPlatformUUID")
+    if v:
+        logger.debug(f"macOS IOPlatformUUID: {v}")
+    return v
+
+
+def get_macos_serial() -> Optional[str]:
+    """IOPlatformSerialNumber — Mac serial as printed under the chassis."""
+    if not IS_MACOS:
+        return None
+    v = _run_ioreg_lookup("IOPlatformSerialNumber")
+    if v:
+        logger.debug(f"macOS serial: {v}")
+    return v
+
+
+# =============================================================================
+# Fonctions Windows
+# =============================================================================
+
 def get_system_uuid() -> Optional[str]:
     """
     Récupère l'UUID système (BIOS/UEFI)
@@ -273,8 +332,20 @@ def get_all_hardware_ids() -> List[str]:
             ids.append(f"BOARD:{board_serial}")
             logger.debug(f"Linux board serial: {board_serial}")
 
+    elif IS_MACOS:
+        # === macOS — IOPlatformExpertDevice fields are the closest analog to
+        #            DMI on Linux: factory-assigned, survive OS reinstall,
+        #            differ between machines.
+        platform_uuid = get_macos_platform_uuid()
+        if platform_uuid:
+            ids.append(f"UUID:{platform_uuid}")
+
+        serial = get_macos_serial()
+        if serial:
+            ids.append(f"SERIAL:{serial}")
+
     else:
-        # === Autre OS (macOS, etc.) ===
+        # === Autre OS — falls through to hostname-only entropy below.
         logger.warning(f"Unsupported OS: {platform.system()}")
 
     return ids

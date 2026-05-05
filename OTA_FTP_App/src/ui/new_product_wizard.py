@@ -10,7 +10,7 @@ from PyQt6.QtGui import QPixmap
 from PyQt6.QtWidgets import (
     QWizard, QWizardPage, QVBoxLayout, QHBoxLayout, QLineEdit, QFormLayout,
     QPushButton, QLabel, QFileDialog, QCheckBox, QSpinBox, QGroupBox,
-    QMessageBox
+    QMessageBox, QGridLayout
 )
 import logging
 _wlog = logging.getLogger("Wizard")
@@ -158,6 +158,69 @@ class _FirmwarePage(QWizardPage):
         return bool(self.antenna_edit.text().strip() or self.power_edit.text().strip())
 
 
+class _PostOtaChecksPage(QWizardPage):
+    """3×3 checkbox grid for [after_antenna]/[after_power]/[after_both].
+
+    Defaults match the universal rule applied to every existing product:
+      - antenna-only OTA → check antenna_version
+      - power-only OTA   → check post_model + power_version
+      - both             → check post_model + antenna_version + power_version
+    Operators can deviate per product if needed."""
+    FIELDS = ("post_model", "antenna_version", "power_version")
+    SCENARIOS = (
+        ("after_antenna", "Antenne seule", ("antenna_version",)),
+        ("after_power",   "Power seul",     ("post_model", "power_version")),
+        ("after_both",    "Les deux",        ("post_model", "antenna_version", "power_version")),
+    )
+
+    def __init__(self):
+        super().__init__()
+        self.setTitle("Vérifications post-OTA")
+        self.setSubTitle(
+            "Cochez les champs à vérifier après chaque type d'OTA. "
+            "Les défauts proposés sont la règle universelle appliquée par tous les produits actuels."
+        )
+        outer = QVBoxLayout(self)
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(20)
+        grid.addWidget(QLabel(""), 0, 0)
+        for col, field in enumerate(self.FIELDS, start=1):
+            lbl = QLabel(field)
+            lbl.setStyleSheet("font-weight: 600;")
+            lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            grid.addWidget(lbl, 0, col)
+        self._checkboxes = {}
+        for row, (sect, label, defaults) in enumerate(self.SCENARIOS, start=1):
+            grid.addWidget(QLabel(label), row, 0)
+            for col, field in enumerate(self.FIELDS, start=1):
+                cb = QCheckBox()
+                cb.setChecked(field in defaults)
+                grid.addWidget(cb, row, col, alignment=Qt.AlignmentFlag.AlignCenter)
+                self._checkboxes[(sect, field)] = cb
+        outer.addLayout(grid)
+
+    def check_sets(self) -> dict:
+        """Return current checkbox state as {section: set(field)}."""
+        return {
+            sect: {f for f in self.FIELDS if self._checkboxes[(sect, f)].isChecked()}
+            for sect, _, _ in self.SCENARIOS
+        }
+
+    def set_from_validation(self, after_antenna, after_power, after_both) -> None:
+        """Pre-fill from an existing config (used on import). Sections that were
+        absent in the source (None) are left at their defaults."""
+        sets = {
+            "after_antenna": after_antenna,
+            "after_power":   after_power,
+            "after_both":    after_both,
+        }
+        for sect, fields in sets.items():
+            if fields is None:
+                continue
+            for f in self.FIELDS:
+                self._checkboxes[(sect, f)].setChecked(f in fields)
+
+
 class _ScanFilterPage(QWizardPage):
     def __init__(self):
         super().__init__()
@@ -246,14 +309,23 @@ class NewProductWizard(QWizard):
         self.setWindowTitle(title)
         self.setMinimumSize(640, 540)
         self.setWizardStyle(QWizard.WizardStyle.ModernStyle)
+        self.checks_page = _PostOtaChecksPage()
         self.addPage(_NamePage())
         self.addPage(_ImagePage())
         self.addPage(_ValidationPage())
         self.addPage(_FirmwarePage())
+        self.addPage(self.checks_page)
         self.addPage(_ScanFilterPage())
         self.addPage(_ReviewPage())
         if initial_payload:
             self._prefill(initial_payload)
+
+    def cleanupPage(self, id: int) -> None:
+        # Default Qt behavior resets the page's fields when the user clicks Back.
+        # That throws away values pre-filled from import-from-deposit (and
+        # values the user has already typed). Suppress the reset so navigation
+        # is non-destructive.
+        return
 
     def _prefill(self, p: dict) -> None:
         """Pre-populate every page's fields from a payload dict. Used by the
@@ -273,6 +345,7 @@ class NewProductWizard(QWizard):
             self.setField("post_model", v.post_model)
             self.setField("antenna_version", v.antenna_version)
             self.setField("power_version", v.power_version)
+            self.checks_page.set_from_validation(v.after_antenna, v.after_power, v.after_both)
             sf = v.scan_filter
             if sf is not None:
                 self.setField("sf_enabled", True)
@@ -293,11 +366,15 @@ class NewProductWizard(QWizard):
                     rssi_min=float(f("sf_rssi_min")),
                     rssi_max=float(f("sf_rssi_max")),
                 )
+            checks = self.checks_page.check_sets()
             validation = FirmwareValidation(
                 pre_model=f("pre_model").strip(),
                 post_model=f("post_model").strip(),
                 antenna_version=f("antenna_version").strip(),
                 power_version=f("power_version").strip(),
+                after_antenna=checks["after_antenna"],
+                after_power=checks["after_power"],
+                after_both=checks["after_both"],
                 scan_filter=sf,
             )
             try:

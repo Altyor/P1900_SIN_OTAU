@@ -173,17 +173,29 @@ def append_section(text: str, section: str, kv_pairs: List[Tuple[str, str]]) -> 
 # ----- full-write helpers (for new files) ------------------------------------
 
 def serialise_new(validation: FirmwareValidation) -> str:
-    """Render a fresh config.ini for a new product. Used by the wizard."""
+    """Render a fresh config.ini for a new product. Used by the wizards.
+
+    [after_antenna] / [after_power] / [after_both] are written explicitly
+    when validation.after_* is a set; sections with `None` are omitted (the
+    tablet's legacy fallback applies — validate every field)."""
+    FIELDS_ORDER = ("post_model", "antenna_version", "power_version")
     lines = [
         "[validation]",
         f"pre_model={validation.pre_model}",
         f"post_model={validation.post_model}",
         f"antenna_version={validation.antenna_version}",
         f"power_version={validation.power_version}",
-        "",
-        "[after_antenna]",
-        "check=antenna_version",
     ]
+    for sect, fields in (
+        ("after_antenna", validation.after_antenna),
+        ("after_power",   validation.after_power),
+        ("after_both",    validation.after_both),
+    ):
+        if fields is None:
+            continue
+        check_value = ",".join(f for f in FIELDS_ORDER if f in fields)
+        lines += ["", f"[{sect}]", f"check={check_value}"]
+
     sf = validation.scan_filter
     if sf is not None:
         lines += [

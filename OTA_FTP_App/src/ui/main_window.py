@@ -11,6 +11,7 @@ from PyQt6.QtWidgets import (
 
 from ..sftp.product_repo import ProductRepo
 from ..util.image_cache import ImageCache
+from ..util.settings import Settings
 from .product_gallery import ProductGallery
 from .product_detail import ProductDetailPage
 from .config_editor import ConfigEditorDialog
@@ -46,10 +47,13 @@ class _DeleteWorker(QThread):
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, repo: ProductRepo, image_cache: ImageCache):
+    def __init__(self, repo: ProductRepo, image_cache: ImageCache,
+                  settings: Settings, initial_theme: str):
         super().__init__()
         self.repo = repo
         self.image_cache = image_cache
+        self.settings = settings
+        self._initial_theme = initial_theme
         self.setWindowTitle("OTA FTP App")
         self.resize(1100, 760)
 
@@ -81,8 +85,13 @@ class MainWindow(QMainWindow):
 
         self.gallery.refresh()
 
-        # Theme cycling: Ctrl+T flips between dark and win98 stylesheets.
-        self._theme_index = 0
+        # Theme cycling: Ctrl+T flips between available stylesheets and persists
+        # the choice to per-user settings so it survives across launches.
+        from .. import main as _main
+        try:
+            self._theme_index = _main.THEMES.index(self._initial_theme)
+        except ValueError:
+            self._theme_index = 0
         QShortcut(QKeySequence("Ctrl+T"), self, activated=self._cycle_theme)
 
     def _cycle_theme(self) -> None:
@@ -94,6 +103,7 @@ class MainWindow(QMainWindow):
         app = QApplication.instance()
         if app is not None:
             app.setStyleSheet(qss)
+        self.settings.set("theme", name)
         self._set_status(f"Thème : {name}")
 
     def _set_status(self, msg: str) -> None:
@@ -167,8 +177,31 @@ class MainWindow(QMainWindow):
         self._set_status(f"Aperçu de {chosen} prêt à valider")
 
         wiz = NewProductWizard(self.repo, parent=self, initial_payload=payload)
-        if wiz.exec():
-            self.gallery.refresh()
+        if not wiz.exec():
+            return
+        self.gallery.refresh()
+
+        # On success, offer to clear the deposit source — keeps /deposit/ tidy
+        # so customers see only what hasn't been processed yet.
+        deposit_path = f"{deposit_root}/{chosen}"
+        ack = QMessageBox.question(
+            self,
+            "Vider la source",
+            f"Importation réussie.\n\n"
+            f"Supprimer aussi la source dans {deposit_path}/ ?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if ack == QMessageBox.StandardButton.Yes:
+            try:
+                self.repo.cli.delete_tree(deposit_path)
+                self._set_status(f"{deposit_path} supprimé")
+            except Exception as e:
+                QMessageBox.warning(
+                    self, "Suppression échouée",
+                    f"Le dossier {deposit_path} n'a pas pu être supprimé :\n\n{e}",
+                )
+                self._set_status(f"Échec suppression {deposit_path} : {e}")
 
     def _launch_add_variant_flow(self) -> None:
         # Pick the parent product

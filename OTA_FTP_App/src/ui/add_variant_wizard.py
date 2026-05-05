@@ -14,7 +14,7 @@ from PyQt6.QtWidgets import (
 from ..sftp.product_repo import ProductRepo
 from ..domain.firmware_validation import FirmwareValidation
 from ..domain.scan_filter import ScanFilterConfig
-from .new_product_wizard import _ValidationPage, _FirmwarePage, _ScanFilterPage
+from .new_product_wizard import _ValidationPage, _FirmwarePage, _ScanFilterPage, _PostOtaChecksPage
 
 
 class _PnNamePage(QWizardPage):
@@ -104,11 +104,17 @@ class AddVariantWizard(QWizard):
         self.setWindowTitle(f"Ajouter une variante — {parent_name}")
         self.setMinimumSize(640, 540)
         self.setWizardStyle(QWizard.WizardStyle.ModernStyle)
+        self.checks_page = _PostOtaChecksPage()
         self.addPage(_PnNamePage(parent_name, existing_pns))
         self.addPage(_ValidationPage())
         self.addPage(_FirmwarePage())
+        self.addPage(self.checks_page)
         self.addPage(_ScanFilterPage())
         self.addPage(_VariantReviewPage(parent_name))
+
+    def cleanupPage(self, id: int) -> None:
+        # Suppress Qt's default field-reset on Back so navigation is non-destructive.
+        return
 
     def accept(self) -> None:
         try:
@@ -121,11 +127,15 @@ class AddVariantWizard(QWizard):
                     rssi_min=float(f("sf_rssi_min")),
                     rssi_max=float(f("sf_rssi_max")),
                 )
+            checks = self.checks_page.check_sets()
             validation = FirmwareValidation(
                 pre_model=f("pre_model").strip(),
                 post_model=f("post_model").strip(),
                 antenna_version=f("antenna_version").strip(),
                 power_version=f("power_version").strip(),
+                after_antenna=checks["after_antenna"],
+                after_power=checks["after_power"],
+                after_both=checks["after_both"],
                 scan_filter=sf,
             )
             try:

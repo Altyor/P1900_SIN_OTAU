@@ -30,6 +30,7 @@ from .sftp.client import SftpClient
 from .sftp.product_repo import ProductRepo
 from .ui.main_window import MainWindow
 from .util.image_cache import ImageCache
+from .util.settings import Settings
 
 
 APP_NAME = "P1900_Production_Manager"
@@ -134,7 +135,11 @@ def main() -> int:
     _setup_logging()
     app = QApplication(sys.argv)
     _install_french_translator(app)
-    qss = load_theme(THEMES[0])
+    settings = Settings(_appdata_dir() / "settings.json")
+    initial_theme = settings.get("theme", THEMES[0])
+    if initial_theme not in THEMES:
+        initial_theme = THEMES[0]
+    qss = load_theme(initial_theme)
     if qss:
         app.setStyleSheet(qss)
 
@@ -149,7 +154,7 @@ def main() -> int:
         return 1
 
     image_cache = ImageCache(_appdata_dir() / "image_cache")
-    window = MainWindow(repo, image_cache)
+    window = MainWindow(repo, image_cache, settings, initial_theme)
     window.show()
     return app.exec()
 
