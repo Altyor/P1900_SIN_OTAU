@@ -161,6 +161,36 @@ class SftpClient:
         with self._lock:
             self.sftp.rmdir(path)
 
+    def move_tree(self, src: str, dst: str) -> None:
+        """Move src → dst. Tries an atomic directory rename first; if the server
+        refuses to rename directories (e.g. S3-backed AWS Transfer Family, which
+        answers "Cannot rename a directory"), falls back to recreating the folder
+        and renaming each file individually. Both paths stay server-side — no
+        file content is downloaded."""
+        try:
+            self.rename(src, dst)
+            return
+        except IOError as e:
+            logger.info(f"Directory rename {src} → {dst} refused ({e}); moving file-by-file")
+        self._move_tree_per_file(src, dst)
+
+    def _move_tree_per_file(self, src: str, dst: str) -> None:
+        self.mkdir_p(dst)
+        # Snapshot the listing, then move each child (each op re-acquires the lock).
+        for entry in self.listdir(src):
+            s = f"{src}/{entry.filename}"
+            d = f"{dst}/{entry.filename}"
+            if stat_mod.S_ISDIR(entry.st_mode):
+                self._move_tree_per_file(s, d)
+            else:
+                self.rename(s, d)
+        # Source is now empty — on object stores the prefix may already be gone,
+        # so a failed rmdir here is not an error.
+        try:
+            self.rmdir(src)
+        except IOError:
+            pass
+
     def delete_tree(self, path: str) -> None:
         """Recursively delete a directory + everything below it. No-op if missing."""
         if not self.exists(path):

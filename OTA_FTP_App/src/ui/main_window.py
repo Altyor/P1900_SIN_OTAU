@@ -80,6 +80,7 @@ class MainWindow(QMainWindow):
         self.detail.edit_config_clicked.connect(self._open_editor)
         self.detail.replace_fw_clicked.connect(self._open_replace_fw)
         self.detail.delete_clicked.connect(self._open_delete)
+        self.detail.rename_clicked.connect(self._open_rename)
         self.detail.add_variant_clicked.connect(self._open_add_variant)
         self.detail.status_changed.connect(self._set_status)
         self.stack.addWidget(self.detail)
@@ -153,7 +154,7 @@ class MainWindow(QMainWindow):
             self._launch_import_from_deposit_flow()
 
     def _launch_new_product_wizard(self) -> None:
-        wiz = NewProductWizard(self.repo, self)
+        wiz = NewProductWizard(self.repo, self, image_cache=self.image_cache)
         if wiz.exec():
             self.gallery.refresh()
 
@@ -192,7 +193,8 @@ class MainWindow(QMainWindow):
             return
         self._set_status(f"Aperçu de {chosen} prêt à valider")
 
-        wiz = NewProductWizard(self.repo, parent=self, initial_payload=payload)
+        wiz = NewProductWizard(self.repo, parent=self, initial_payload=payload,
+                               image_cache=self.image_cache)
         if not wiz.exec():
             return
         self.gallery.refresh()
@@ -289,6 +291,41 @@ class MainWindow(QMainWindow):
         )
         if dlg.exec():
             self.detail.load(name, pn_name=detail.pn_name)
+
+    def _open_rename(self, name: str) -> None:
+        """Rename the product folder on the server. The move covers everything
+        under it (PN sub-folders included) and is safe for both layouts — see
+        SftpClient.move_tree for the S3 per-file fallback. The name-keyed image
+        cache is migrated so the image isn't re-downloaded after the rename."""
+        new_name, ok = QInputDialog.getText(
+            self, "Renommer le produit",
+            f"Nouveau nom pour « {name} » :\n\n"
+            "Le dossier sera renommé sur le serveur (avec tout son contenu).",
+            QLineEdit.EchoMode.Normal, name,
+        )
+        if not ok:
+            return
+        new_name = new_name.strip()
+        if not new_name or new_name == name:
+            return
+        if "/" in new_name or "\\" in new_name:
+            QMessageBox.warning(self, "Nom invalide", "Le nom ne peut pas contenir « / » ou « \\ ».")
+            return
+
+        self.detail.setEnabled(False)
+        self._set_status(f"Renommage de « {name} » en « {new_name} »…")
+        try:
+            self.repo.rename_product(name, new_name)
+            self.image_cache.rename(name, new_name)
+        except Exception as e:
+            self.detail.setEnabled(True)
+            QMessageBox.critical(self, "Renommage échoué", str(e))
+            self._set_status(f"Erreur renommage : {e}")
+            return
+        self.detail.setEnabled(True)
+        self._set_status(f"« {name} » renommé en « {new_name} »")
+        self.detail.load(new_name)
+        self.gallery.refresh()
 
     def _open_delete(self, name: str) -> None:
         # Decide scope: if the product has >1 PN sub-folder, delete only the

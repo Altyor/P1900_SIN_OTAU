@@ -395,11 +395,39 @@ class ProductRepo:
         if self.cli.exists(target_pn):
             raise FileExistsError(f"{target_pn} existe déjà — choisissez un autre PN")
 
-        # Create the new PN sub-folder, then move FW into it via SFTP rename
-        # (atomic on the server; no upload-then-delete window of risk).
+        # Create the new PN sub-folder, then move FW into it. move_tree does an
+        # atomic directory rename where the server allows it, and falls back to a
+        # per-file move on S3-backed servers (AWS Transfer) that refuse to rename
+        # a directory.
         logger.info(f"Converting {name} to PN layout under {existing_pn}")
         self.cli.mkdirs(target_pn)
-        self.cli.rename(direct_fw, target_fw)
+        self.cli.move_tree(direct_fw, target_fw)
+
+    # ------- rename -------
+
+    def rename_product(self, name: str, new_name: str) -> None:
+        """Rename a product's top-level folder on the server (a single atomic
+        SFTP rename — everything below it, including any PN sub-folders, moves
+        with it). Refuses if:
+          - either name is empty or contains a path separator
+          - the source doesn't exist
+          - the target name is already taken"""
+        if not name or "/" in name or "\\" in name:
+            raise ValueError(f"Nom source invalide : {name!r}")
+        if not new_name or "/" in new_name or "\\" in new_name:
+            raise ValueError(f"Nouveau nom invalide : {new_name!r}")
+        if new_name == name:
+            return
+        src = f"{self.root}/{name}"
+        dst = f"{self.root}/{new_name}"
+        if not self.cli.exists(src):
+            raise FileNotFoundError(f"{src} n'existe pas sur le serveur")
+        if self.cli.exists(dst):
+            raise FileExistsError(f"« {new_name} » existe déjà sur le serveur")
+        logger.info(f"Renaming {src} → {dst}")
+        # move_tree handles servers that refuse to rename a directory (S3-backed
+        # AWS Transfer) by falling back to a per-file move.
+        self.cli.move_tree(src, dst)
 
     # ------- add variant -------
 

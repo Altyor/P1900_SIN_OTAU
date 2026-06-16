@@ -95,6 +95,7 @@ Tous sont sous `%APPDATA%\P1900_Production_Manager\` (raccourci pour `C:\Users\<
 | `secrets.bin` | Credentials SFTP chiffrés (DPAPI). Non-portable — lié à la machine. |
 | `settings.json` | Préférences utilisateur (thème actif, etc.). |
 | `image_cache\<produit>_<taille>.png` | Cache des miniatures pour accélérer les chargements. |
+| `image_cache\index.json` | Associe chaque image en cache à son nom de produit (proposition de réutilisation d'image à la création d'un produit). |
 
 L'application n'écrit **rien d'autre** sur le poste.
 

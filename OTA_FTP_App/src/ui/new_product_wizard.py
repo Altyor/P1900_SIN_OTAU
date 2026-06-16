@@ -2,25 +2,77 @@
 from __future__ import annotations
 import io
 import os
+import tempfile
 from typing import Optional
 
 from PIL import Image
-from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QPixmap
+from PyQt6.QtCore import Qt, QSize
+from PyQt6.QtGui import QPixmap, QIcon
 from PyQt6.QtWidgets import (
     QWizard, QWizardPage, QVBoxLayout, QHBoxLayout, QLineEdit, QFormLayout,
     QPushButton, QLabel, QFileDialog, QCheckBox, QSpinBox, QGroupBox,
-    QMessageBox, QGridLayout
+    QMessageBox, QGridLayout, QDialog, QScrollArea, QWidget, QToolButton,
+    QDialogButtonBox
 )
 import logging
 _wlog = logging.getLogger("Wizard")
 
 from ..sftp.product_repo import ProductRepo
+from ..util.image_cache import ImageCache
 from ..domain.firmware_validation import FirmwareValidation
 from ..domain.scan_filter import ScanFilterConfig
 
 
 THUMB_SIZE = 240
+CACHE_THUMB = 120
+
+
+class _CacheImagePicker(QDialog):
+    """Grid of cached product images. The same physical product is often added
+    again under a different project name, so reusing an existing image saves the
+    operator from hunting down the source file."""
+
+    def __init__(self, cache: ImageCache, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Réutiliser l'image d'un produit existant")
+        self.setMinimumSize(560, 480)
+        self.selected_path: Optional[str] = None
+
+        outer = QVBoxLayout(self)
+        outer.addWidget(QLabel(
+            "Sélectionnez l'image d'un produit existant. Souvent le même produit "
+            "physique est rajouté sous un autre nom de projet."
+        ))
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        container = QWidget()
+        grid = QGridLayout(container)
+        grid.setSpacing(12)
+
+        entries = cache.list_cached()
+        cols = 3
+        for i, (name, path) in enumerate(entries):
+            btn = QToolButton()
+            btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextUnderIcon)
+            btn.setIcon(QIcon(QPixmap(str(path))))
+            btn.setIconSize(QSize(CACHE_THUMB, CACHE_THUMB))
+            btn.setText(name)
+            btn.setToolTip(name)
+            btn.setFixedWidth(CACHE_THUMB + 40)
+            btn.clicked.connect(lambda _=False, p=str(path): self._choose(p))
+            grid.addWidget(btn, i // cols, i % cols, alignment=Qt.AlignmentFlag.AlignTop)
+
+        scroll.setWidget(container)
+        outer.addWidget(scroll, stretch=1)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
+        buttons.rejected.connect(self.reject)
+        outer.addWidget(buttons)
+
+    def _choose(self, path: str) -> None:
+        self.selected_path = path
+        self.accept()
 
 
 class _NamePage(QWizardPage):
@@ -36,8 +88,9 @@ class _NamePage(QWizardPage):
 
 
 class _ImagePage(QWizardPage):
-    def __init__(self):
+    def __init__(self, cache: Optional[ImageCache] = None):
         super().__init__()
+        self._cache = cache
         self.setTitle("Image du produit")
         self.setSubTitle("Sera redimensionnée à 600×600 et enregistrée comme product.png.")
         outer = QVBoxLayout(self)
@@ -48,6 +101,12 @@ class _ImagePage(QWizardPage):
         browse = QPushButton("Parcourir…")
         browse.clicked.connect(self._on_browse)
         row.addWidget(browse)
+        self.cache_btn = QPushButton("Réutiliser une image…")
+        self.cache_btn.setToolTip("Choisir l'image d'un produit déjà présent sur le serveur")
+        self.cache_btn.clicked.connect(self._on_pick_cached)
+        # Only useful once at least one product image has been cached.
+        self.cache_btn.setEnabled(bool(cache and cache.list_cached()))
+        row.addWidget(self.cache_btn)
         outer.addLayout(row)
         self.preview = QLabel("(aucune image)")
         self.preview.setFixedSize(THUMB_SIZE, THUMB_SIZE)
@@ -100,6 +159,24 @@ class _ImagePage(QWizardPage):
             self.preview.setPixmap(pix)
         except Exception as e:
             QMessageBox.critical(self, "Erreur", f"Image invalide : {e}")
+
+    def _on_pick_cached(self) -> None:
+        if not self._cache:
+            return
+        picker = _CacheImagePicker(self._cache, self)
+        if not picker.exec() or not picker.selected_path:
+            return
+        # Cached images are already finished 600×600 product.png files. Copy the
+        # bytes to a stable temp path so create_product can upload it unchanged.
+        try:
+            with open(picker.selected_path, "rb") as fh:
+                data = fh.read()
+            out_path = os.path.join(tempfile.gettempdir(), "ota_product_from_cache.png")
+            with open(out_path, "wb") as fh:
+                fh.write(data)
+            self.path_edit.setText(out_path)
+        except OSError as e:
+            QMessageBox.critical(self, "Erreur", f"Lecture du cache impossible : {e}")
 
 
 class _ValidationPage(QWizardPage):
@@ -302,7 +379,8 @@ class _ReviewPage(QWizardPage):
 
 
 class NewProductWizard(QWizard):
-    def __init__(self, repo: ProductRepo, parent=None, initial_payload=None):
+    def __init__(self, repo: ProductRepo, parent=None, initial_payload=None,
+                 image_cache: Optional[ImageCache] = None):
         super().__init__(parent)
         self.repo = repo
         title = "Importer depuis /deposit/" if initial_payload else "Nouveau produit"
@@ -311,7 +389,7 @@ class NewProductWizard(QWizard):
         self.setWizardStyle(QWizard.WizardStyle.ModernStyle)
         self.checks_page = _PostOtaChecksPage()
         self.addPage(_NamePage())
-        self.addPage(_ImagePage())
+        self.addPage(_ImagePage(image_cache))
         self.addPage(_ValidationPage())
         self.addPage(_FirmwarePage())
         self.addPage(self.checks_page)

@@ -65,6 +65,7 @@ class ProductDetailPage(QWidget):
     edit_config_clicked = pyqtSignal(str)         # product name
     replace_fw_clicked = pyqtSignal(str, str)     # product name, slot ('Antenna'|'Power')
     delete_clicked = pyqtSignal(str)              # product name
+    rename_clicked = pyqtSignal(str)              # product name
     add_variant_clicked = pyqtSignal(str)         # product name (PN-layout products only)
     status_changed = pyqtSignal(str)              # bottom-bar status text
 
@@ -108,6 +109,11 @@ class ProductDetailPage(QWidget):
         self.edit_btn = QPushButton("Modifier la configuration")
         self.edit_btn.clicked.connect(self._on_edit)
         bar.addWidget(self.edit_btn)
+        self.rename_btn = QPushButton("Renommer")
+        self.rename_btn.setProperty("role", "ghost")
+        self.rename_btn.setEnabled(False)
+        self.rename_btn.clicked.connect(self._on_rename)
+        bar.addWidget(self.rename_btn)
         self.delete_btn = QPushButton("Supprimer")
         self.delete_btn.setProperty("role", "danger")
         self.delete_btn.setEnabled(False)
@@ -158,6 +164,7 @@ class ProductDetailPage(QWidget):
         self._current_detail = None
         self.title.setText(name)
         self.edit_btn.setEnabled(False)
+        self.rename_btn.setEnabled(False)
         self.delete_btn.setEnabled(False)
         self.status_changed.emit(f"Chargement de {name}…")
         # Clear stale content
@@ -206,6 +213,7 @@ class ProductDetailPage(QWidget):
 
         self._render(detail)
         self.edit_btn.setEnabled(True)
+        self.rename_btn.setEnabled(True)
         self.delete_btn.setEnabled(True)
         self.status_changed.emit(f"{detail.name} : configuration chargée, image en cours…")
 
@@ -263,6 +271,8 @@ class ProductDetailPage(QWidget):
         warn.setWordWrap(True)
         self.fw_layout.addWidget(warn)
         self.image_label.setText("(non chargé)")
+        # Folder-level ops stay available even when the config can't be parsed.
+        self.rename_btn.setEnabled(True)
         self.delete_btn.setEnabled(True)
         self._current_detail = None  # editor stays disabled
         self.status_changed.emit(f"Erreur : {err}")
@@ -356,6 +366,10 @@ class ProductDetailPage(QWidget):
     def _on_delete(self) -> None:
         if self._current_name:
             self.delete_clicked.emit(self._current_name)
+
+    def _on_rename(self) -> None:
+        if self._current_name:
+            self.rename_clicked.emit(self._current_name)
 
     def _on_add_variant(self) -> None:
         if self._current_name:
