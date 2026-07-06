@@ -92,8 +92,9 @@ open class MainActivity : BaseActivity(),
         setupMainNavigationListener()
 
         _binding.fabFirmware.setOnClickListener {
-            firmwareBrowserLaunched = false
-            launchFirmwareBrowser()
+            // Explicit re-selection: always open the browser, even when a
+            // product is already selected (that is the whole point here).
+            launchFirmwareBrowser(force = true)
         }
 
         // Register the receiver
@@ -235,8 +236,18 @@ open class MainActivity : BaseActivity(),
         }
     }
 
-    private fun launchFirmwareBrowser() {
-        if (firmwareBrowserLaunched) return
+    private fun launchFirmwareBrowser(force: Boolean = false) {
+        if (firmwareBrowserLaunched && !force) return
+        // If a firmware is already selected (e.g., MainActivity was destroyed and
+        // recreated by a configuration change while FirmwareSelection — a
+        // process-scoped object — survived), don't re-prompt the operator on the
+        // automatic startup path. The "Change Product" FAB passes force = true to
+        // bypass this guard and re-open the browser on demand.
+        if (!force && com.siliconlabs.bledemo.features.firmware_browser.domain.FirmwareSelection.isSelected()) {
+            firmwareBrowserLaunched = true
+            updateFirmwareSelectionBar()
+            return
+        }
         firmwareBrowserLaunched = true
         val intent = Intent(this, FirmwareBrowserActivity::class.java)
         firmwareBrowserLauncher.launch(intent)
