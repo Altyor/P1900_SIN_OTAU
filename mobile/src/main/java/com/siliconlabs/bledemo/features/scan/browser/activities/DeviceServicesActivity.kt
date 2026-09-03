@@ -90,6 +90,11 @@ class DeviceServicesActivity : BaseActivity() {
     // FW version string over the same connection.
     private var postOtaColdReconnectPending = false
     private var postOtaColdReconnectDone = false
+    // Post-OTA, when the new FW char isn't visible (stale GATT cache), we clear the
+    // bond in-app and reconnect, retrying up to MAX_CACHE_CLEAR_ATTEMPTS. cacheHintShown
+    // gates the one-time fallback instruction if all attempts fail.
+    private var cacheClearAttempts = 0
+    private var cacheHintShown = false
     // Persistent-log bookkeeping: otaWasRun is set when an OTA was actually
     // launched in this session (so a normal connect to a healthy device
     // doesn't trigger a "success" / "failed" mark). otaResultRecorded keeps
@@ -122,6 +127,12 @@ class DeviceServicesActivity : BaseActivity() {
     private var pack = 0
     private var otafile: ByteArray? = null
 
+    // writeCharacteristic() returns false when the GATT layer is busy with another
+    // op (a periodic poll, a descriptor write, etc.). Track per-write retries so
+    // we recover from a transient busy state instead of silently freezing the bar.
+    private var otaDataWriteRetries = 0
+    private var otaControlWriteRetries = 0
+
 
     // Per-packet pacing for non-reliable (WRITE_NO_RESPONSE) OTA uploads. 1 ms was
     // way too fast — packets overflowed Android's LL queue and the loop "finished"
@@ -153,6 +164,11 @@ class DeviceServicesActivity : BaseActivity() {
     // Firmware version refresh functionality
     private var firmwareRefreshRunnable: Runnable? = null
     private val firmwareRefreshInterval = 10000L // Refresh every 10 seconds
+
+    // Chained model-number read scheduled 1.5 s after each FW version read.
+    // Tracked here so we can cancel it when an OTA starts — otherwise it lands
+    // on the GATT queue mid-OTA and causes writeCharacteristic() to return false.
+    private var pendingModelReadAfterFw: Runnable? = null
 
     // Wake lock to keep device awake during OTA
     private var wakeLock: PowerManager.WakeLock? = null
@@ -213,13 +229,45 @@ class DeviceServicesActivity : BaseActivity() {
         }
     }
 
+    // Set once the PC console (BLE_Bridge_OTA) sends any command. While active, a
+    // BT toggle (the PC's cache-clear) must NOT close this screen — we stay alive and
+    // auto-reconnect when BT returns so the post-OTA re-read can run.
+    private var pcControlActive = false
+
+    private val commandReceiver: BroadcastReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            if (intent.action != OTA_CMD_ACTION) return
+            val cmd = intent.getStringExtra("cmd")?.uppercase(Locale.US) ?: return
+            pcControlActive = true
+            Log.d("OTA_DEBUG", "PC command received: $cmd")
+            when (cmd) {
+                "START_OTA" -> runOnUiThread { if (isUiCreated) checkForOtaCharacteristic() }
+                "RECONNECT" -> runOnUiThread { reconnectForPcControl() }
+                "GET_STATUS" -> com.siliconlabs.bledemo.features.firmware_browser.domain.OtaStatusReporter.touch()
+                else -> Log.w("OTA_DEBUG", "Unknown PC command: $cmd")
+            }
+        }
+    }
+
     private val bluetoothReceiver: BroadcastReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             val action = intent.action
             if (action == BluetoothAdapter.ACTION_STATE_CHANGED) {
                 val state = intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR)
                 when (state) {
-                    BluetoothAdapter.STATE_OFF -> finish()
+                    BluetoothAdapter.STATE_OFF -> {
+                        if (pcControlActive) {
+                            Log.d("OTA_DEBUG", "BT off during PC control — staying alive for cache-clear")
+                            com.siliconlabs.bledemo.features.firmware_browser.domain.OtaStatusReporter
+                                .setPhase("VERIFYING", "Bluetooth désactivé (effacement du cache)")
+                        } else finish()
+                    }
+                    BluetoothAdapter.STATE_ON -> {
+                        if (pcControlActive) {
+                            Log.d("OTA_DEBUG", "BT back on during PC control — reconnecting to re-read")
+                            handler.postDelayed({ reconnectForPcControl() }, 1500)
+                        }
+                    }
                 }
             }
         }
@@ -323,7 +371,22 @@ class DeviceServicesActivity : BaseActivity() {
                         Log.d("OTA_DEBUG", "Device reconnected during OTA process, discovering services")
                         handler.postDelayed({
                             bluetoothGatt = null
-                            gatt.discoverServices()
+                            if (viewState == ViewState.REBOOTING_NEW_FIRMWARE) {
+                                // The new firmware may expose characteristics the old one
+                                // didn't (a structural GATT change, e.g. the FW-version
+                                // char). Android caches the attribute table in the system
+                                // Bluetooth process; an app-level reconnect does NOT flush
+                                // it (only a BT adapter toggle otherwise does), so the new
+                                // chars stay invisible and post-OTA verify fails. Clearing
+                                // the cache HERE — before discovery — forces a fresh read.
+                                // Must target `gatt` (bluetoothGatt was just nulled).
+                                val refreshed = refreshDeviceCache(gatt)
+                                Log.d("OTA_DEBUG", "Pre-discovery GATT cache refresh (post-OTA): $refreshed")
+                                // Small gap so the stack drops the cached table before we re-read.
+                                handler.postDelayed({ gatt.discoverServices() }, 200)
+                            } else {
+                                gatt.discoverServices()
+                            }
                         }, 250)
                     } else {
                         Log.d("OTA_DEBUG", "Ignoring duplicate STATE_CONNECTED (discoveryPending=$discoveryPending, viewState=$viewState)")
@@ -335,6 +398,14 @@ class DeviceServicesActivity : BaseActivity() {
                     Log.d("OTA_DEBUG", "Device disconnected with status $status during state $viewState")
                     when (viewState) {
                         ViewState.IDLE -> {
+                            // Plain disconnect (no OTA / handoff / PC cache-clear in flight):
+                            // report "no part" so the PC console disables Démarrer OTA.
+                            if (!awaitingPowerReboot && !pendingPowerOta && !otaCompleted && !pcControlActive) {
+                                com.siliconlabs.bledemo.features.firmware_browser.domain.OtaStatusReporter.apply {
+                                    setDevice(null, null, false)
+                                    setPhase("IDLE", "Déconnecté")
+                                }
+                            }
                             if (awaitingPowerReboot) {
                                 // Power PCB finished updating and device kicked us — auto-reconnect
                                 Log.d("OTA_DEBUG", "Power reboot kick detected (status=$status), auto-reconnecting")
@@ -533,13 +604,24 @@ class DeviceServicesActivity : BaseActivity() {
                                 updateFirmwareVersionDisplay()
                             }
 
-                            // Read model number after a delay to allow bonding to complete
-                            handler.postDelayed({
+                            // Read model number after a delay to allow bonding to complete.
+                            // Hoisted to a tracked Runnable so startDirectOta() can cancel it,
+                            // and gated on viewState so a stale fire during INITIALIZING_UPLOAD/
+                            // UPLOADING/REBOOTING won't race the OTA write queue.
+                            pendingModelReadAfterFw?.let { handler.removeCallbacks(it) }
+                            val modelReadRunnable = Runnable {
+                                pendingModelReadAfterFw = null
+                                if (viewState != ViewState.IDLE) {
+                                    Log.d("OTA_DEBUG", "Skipping chained model read — viewState=$viewState")
+                                    return@Runnable
+                                }
                                 getModelNumberCharacteristic()?.let { modelCharacteristic ->
                                     Log.d("OTA_DEBUG", "Reading model number after firmware version")
                                     bluetoothGatt?.readCharacteristic(modelCharacteristic)
                                 }
-                            }, 1500)
+                            }
+                            pendingModelReadAfterFw = modelReadRunnable
+                            handler.postDelayed(modelReadRunnable, 1500)
                         }
                     } else {
                         firmwareReadRetries++
@@ -602,6 +684,10 @@ class DeviceServicesActivity : BaseActivity() {
                 runOnUiThread { supportActionBar?.title = characteristic.getStringValue(0) }
                 viewState = ViewState.IDLE
                 bluetoothService?.isNotificationEnabled = true
+                // Re-arm the 10 s periodic firmware-version refresh that startDirectOta()
+                // stopped before the upload. It's idempotent (cancels any existing schedule
+                // first), so calling it here is safe even if it never got stopped.
+                startFirmwareVersionRefresh()
 
                 handler.postDelayed({
                     initServicesFragments(bluetoothGatt?.services.orEmpty())
@@ -829,6 +915,13 @@ class DeviceServicesActivity : BaseActivity() {
 
                     ViewState.IDLE -> {
                         Log.d("OTA_DEBUG", "Normal services discovery in IDLE state")
+                        // Report the connected part so the PC console can enable "Démarrer OTA".
+                        val dev = gatt.device
+                        com.siliconlabs.bledemo.features.firmware_browser.domain.OtaStatusReporter.apply {
+                            setDevice(dev.address, dev.name,
+                                dev.bondState == BluetoothDevice.BOND_BONDED)
+                            if (!otaCompleted) setPhase("CONNECTED", "Appareil connecté")
+                        }
                         handler.postDelayed({
                             initServicesFragments(bluetoothGatt?.services.orEmpty())
                             dumpAllCharacteristics()
@@ -1222,6 +1315,19 @@ class DeviceServicesActivity : BaseActivity() {
 
     private fun startDirectOta() {
         Log.d("OTA_DEBUG", "Starting direct OTA with file: $globalOtaFileName")
+
+        // Quiesce background GATT traffic before touching the OTA characteristics.
+        // The 10 s firmware-version refresh and its 1.5 s chained model-number read
+        // will otherwise land on the queue mid-OTA and cause the first OTA_DATA
+        // writeCharacteristic() to return false — see investigation log of the
+        // SIN-4-RS-20 (antenna 2.11) freeze that produced this fix.
+        stopFirmwareVersionRefresh()
+        pendingModelReadAfterFw?.let {
+            handler.removeCallbacks(it)
+            pendingModelReadAfterFw = null
+            Log.d("OTA_DEBUG", "Cancelled pending chained model-number read for OTA")
+        }
+
         // Truncate persistent OTA log only at the start of a *new* upload.
         // The retry path also re-enters startDirectOta but we don't want to
         // wipe the log mid-OTA; gate on otaInProgress.
@@ -1275,6 +1381,12 @@ class DeviceServicesActivity : BaseActivity() {
         registerReceiver(
             bondStateChangeListener,
             IntentFilter(BluetoothDevice.ACTION_BOND_STATE_CHANGED)
+        )
+        // Command channel for the PC console (adb am broadcast). Exported so the
+        // shell user can reach it; only meaningful when a PC is driving over adb.
+        ContextCompat.registerReceiver(
+            this, commandReceiver, IntentFilter(OTA_CMD_ACTION),
+            ContextCompat.RECEIVER_EXPORTED
         )
     }
 
@@ -1424,6 +1536,7 @@ class DeviceServicesActivity : BaseActivity() {
     private fun unregisterReceivers() {
         unregisterReceiver(bluetoothReceiver)
         unregisterReceiver(bondStateChangeListener)
+        try { unregisterReceiver(commandReceiver) } catch (_: Exception) {}
     }
 
     override fun onCreateOptionsMenu(menu: Menu): Boolean {
@@ -1786,7 +1899,24 @@ class DeviceServicesActivity : BaseActivity() {
                 val result = bluetoothGatt?.writeCharacteristic(characteristic)
                 Log.d("OTA_DEBUG", "writeCharacteristic result: $result")
                 if (result != true) {
-                    Log.e("OTA_DEBUG", "Failed to write OTA control characteristic!")
+                    // Same recovery pattern as otaWriteDataReliable(): GATT busy →
+                    // back off briefly and retry. Without this the OTA flow gets
+                    // stuck in INITIALIZING_UPLOAD because no callback ever arrives.
+                    if (otaControlWriteRetries < OTA_CONTROL_WRITE_MAX_RETRIES) {
+                        otaControlWriteRetries++
+                        val delayMs = 50L * otaControlWriteRetries
+                        Log.w("OTA_DEBUG", "OTA_CONTROL write returned false — retrying in ${delayMs}ms (attempt $otaControlWriteRetries/$OTA_CONTROL_WRITE_MAX_RETRIES)")
+                        handler.postDelayed({ writeOtaControl(ctrl) }, delayMs)
+                    } else {
+                        Log.e("OTA_DEBUG", "OTA_CONTROL write still failing after $OTA_CONTROL_WRITE_MAX_RETRIES retries — aborting OTA")
+                        otaControlWriteRetries = 0
+                        showMessage(com.siliconlabs.bledemo.features.firmware_browser.domain.UiStrings.otaDeviceNotReady)
+                        if (viewState == ViewState.INITIALIZING_UPLOAD || viewState == ViewState.UPLOADING) {
+                            viewState = ViewState.IDLE
+                        }
+                    }
+                } else {
+                    otaControlWriteRetries = 0
                 }
             }, controlDelay)
         }
@@ -1934,9 +2064,23 @@ class DeviceServicesActivity : BaseActivity() {
         Log.d("OTA_DEBUG", "writeCharacteristic result: $result")
 
         if (result != true) {
-            Log.e("OTA_DEBUG", "Failed to write OTA data characteristic!")
+            // GATT busy (another op still in flight). Without recovery the upload pump
+            // dies silently and the progress bar freezes until the supervision timeout
+            // disconnects ~minutes later. Retry on a short backoff; if it still won't
+            // queue, force a disconnect so the existing attemptOtaRetry path takes over.
+            if (otaDataWriteRetries < OTA_DATA_WRITE_MAX_RETRIES) {
+                otaDataWriteRetries++
+                val delayMs = 50L * otaDataWriteRetries
+                Log.w("OTA_DEBUG", "OTA_DATA write returned false — retrying in ${delayMs}ms (attempt $otaDataWriteRetries/$OTA_DATA_WRITE_MAX_RETRIES)")
+                handler.postDelayed({ otaWriteDataReliable() }, delayMs)
+                return
+            }
+            Log.e("OTA_DEBUG", "OTA_DATA write still failing after $OTA_DATA_WRITE_MAX_RETRIES retries — forcing disconnect to trigger attemptOtaRetry")
+            otaDataWriteRetries = 0
+            bluetoothGatt?.disconnect()
             return
         }
+        otaDataWriteRetries = 0
 
         val waiting_time = (System.currentTimeMillis() - otatime)
         val bitrate = if (waiting_time > 0) 8 * pack.toFloat() / waiting_time else 0f
@@ -1996,10 +2140,47 @@ class DeviceServicesActivity : BaseActivity() {
         }
     }
 
-    private fun refreshDeviceCache(): Boolean {
+    /**
+     * In-app GATT cache flush: tear down the link, remove the bond, then reconnect.
+     * Removing the bond deletes Android's on-disk attribute cache for the device
+     * (the effect the operator otherwise gets by clearing the bond manually), so the
+     * fresh discovery sees the newly-added post-OTA characteristic. The reconnect
+     * re-triggers pairing (the operator's normal popup). Order matters: disconnect +
+     * close FIRST so removeBond() isn't refused while a GATT operation is in flight
+     * (that returned false when we removed the bond mid-connection). Driven in a
+     * bounded loop by cacheClearAttempts in checkAllVersionsMatch.
+     */
+    private fun forceCacheClearViaRebond() {
+        val device = bluetoothGatt?.device ?: bluetoothDevice ?: run {
+            Log.e("OTA_DEBUG", "forceCacheClearViaRebond: no device")
+            return
+        }
+        runOnUiThread {
+            showOtaWaitingOverlay(
+                com.siliconlabs.bledemo.features.firmware_browser.domain.UiStrings.statusReconnecting
+            )
+        }
+        bluetoothDevice = device
+        viewState = ViewState.REBOOTING_NEW_FIRMWARE
+        // Tear down the connection FIRST, then clear the bond with no link active.
+        try { bluetoothGatt?.disconnect() } catch (_: Exception) {}
+        handler.postDelayed({
+            try { bluetoothGatt?.close() } catch (_: Exception) {}
+            bluetoothGatt = null
+            val removed = removeBond(device)
+            Log.d("OTA_DEBUG", "removeBond() result: $removed")
+            // Reconnect fresh; discovery now runs against a cleared cache.
+            handler.postDelayed({
+                Log.d("OTA_DEBUG", "Reconnecting after bond-clear to re-read chars")
+                bluetoothService?.connectGatt(device, true, gattCallback)
+            }, 800)
+        }, 400)
+    }
+
+    private fun refreshDeviceCache(gatt: BluetoothGatt? = bluetoothGatt): Boolean {
         return try {
-            bluetoothGatt?.javaClass?.getMethod("refresh")?.let {
-                val success: Boolean = (it.invoke(bluetoothGatt, *arrayOfNulls(0)) as Boolean)
+            gatt?.javaClass?.getMethod("refresh")?.let {
+                val success: Boolean = (it.invoke(gatt, *arrayOfNulls(0)) as Boolean)
                 Timber.d("refreshDeviceCache(): success: $success")
                 success
             } ?: false
@@ -2007,6 +2188,27 @@ class DeviceServicesActivity : BaseActivity() {
             Timber.e("refreshDeviceCache(): an exception occurred while refreshing device")
             false
         }
+    }
+
+    /**
+     * PC-driven reconnect after a cache-clear (BT toggle). Routes through the
+     * post-OTA path (REBOOTING_NEW_FIRMWARE) so discovery re-reads the DIS and
+     * checkAllVersionsMatch re-verifies with the (now cleared) cache.
+     */
+    private fun reconnectForPcControl() {
+        val device = bluetoothGatt?.device ?: bluetoothDevice ?: run {
+            Log.w("OTA_DEBUG", "reconnectForPcControl: no device")
+            return
+        }
+        bluetoothDevice = device
+        viewState = ViewState.REBOOTING_NEW_FIRMWARE
+        try { bluetoothGatt?.close() } catch (_: Exception) {}
+        bluetoothGatt = null
+        com.siliconlabs.bledemo.features.firmware_browser.domain.OtaStatusReporter
+            .setPhase("VERIFYING", "Reconnexion pour vérification")
+        handler.postDelayed({
+            bluetoothService?.connectGatt(device, true, gattCallback)
+        }, 500)
     }
 
     private fun reconnect(requestRssiUpdates: Boolean = false) {
@@ -2360,6 +2562,8 @@ class DeviceServicesActivity : BaseActivity() {
         characteristicDumpDone = false
         postOtaColdReconnectPending = false
         postOtaColdReconnectDone = false
+        cacheClearAttempts = 0
+        cacheHintShown = false
         otaWasRun = false
         otaResultRecorded = false
         Log.d("OTA_DEBUG", "OTA state reset for new device session (cardType=${selection.cardType}, pendingSecondOta=${selection.pendingSecondOta})")
@@ -2485,28 +2689,50 @@ class DeviceServicesActivity : BaseActivity() {
                 validation.powerVersion.isEmpty() ||
                 (power != null && power == validation.powerVersion)
 
-            if (modelMatch && antennaMatch && powerMatch && !otaCompleted) {
-                // All versions already match — no OTA needed
-                binding.btnStartOta.isEnabled = false
-                binding.btnStartOta.alpha = 0.4f
-                binding.btnStartOta.text = com.siliconlabs.bledemo.features.firmware_browser.domain.UiStrings.versionsAlreadyMatch
-                binding.btnStartOta.visibility = View.GONE
-
-                val strings = com.siliconlabs.bledemo.features.firmware_browser.domain.UiStrings
-                binding.tvOperatorStatus.text = strings.statusAlreadyUpToDate
-                binding.tvOperatorStatus.setTextColor(
-                    ContextCompat.getColor(this, R.color.silabs_green)
-                )
-            }
+            // No pre-OTA short-circuit on version match. Per design directive, OTA
+            // must run whenever the operator launches it — version strings aren't
+            // proof of correct firmware (units have shipped reporting the right
+            // version from another product's binary). The post-OTA verify block
+            // below still uses modelMatch/antennaMatch/powerMatch to mark the
+            // OtaFileLogger entry as success/fail.
 
             // Persistent-log lifecycle: when an OTA we just ran is verified
             // good (post-OTA reads match expected versions), discard the log.
             // If we ran an OTA but the post-OTA reads don't match (silent
             // Apploader rollback), preserve it for diagnostics.
+            // Publish current reads/expected for the PC console on every pass.
+            val status = com.siliconlabs.bledemo.features.firmware_browser.domain.OtaStatusReporter
+            status.setExpected(expectedModel, validation.antennaVersion, validation.powerVersion)
+            status.setReads(model, antenna, power)
+
             if (otaCompleted && !otaResultRecorded && otaWasRun) {
                 if (modelMatch && antennaMatch && powerMatch) {
                     com.siliconlabs.bledemo.features.firmware_browser.domain.OtaFileLogger
                         .markOtaSuccess()
+                    status.setNeedsCacheClear(false)
+                    status.setResult("PASS", "Mise à jour vérifiée")
+                    status.setPhase("DONE")
+                    otaResultRecorded = true
+                } else if ("antenna_version" in checks &&
+                    getFirmwareVersionCharacteristic() == null) {
+                    // The only mismatch is that the new FW-version characteristic isn't
+                    // visible — Android's stale GATT cache hides a characteristic the old
+                    // firmware didn't expose. The transfer + END succeeded, so this is NOT
+                    // a failure. Signal the PC console to BT-toggle (cache clear) + reconnect;
+                    // that's reliable. Only fall back to the in-app operator hint when no PC
+                    // is driving. Don't record a result — verify runs again after the clear.
+                    status.setResult(null)
+                    status.setNeedsCacheClear(true)
+                    status.setPhase("VERIFYING", "Nouvelle version masquée par le cache — effacement requis")
+                    if (!pcControlActive && !cacheHintShown) {
+                        cacheHintShown = true
+                        Log.w("OTA_DEBUG", "Post-OTA FW char not visible (stale cache) — guiding operator to Delete Bond + reconnect")
+                        showLongMessage(
+                            com.siliconlabs.bledemo.features.firmware_browser.domain.UiStrings.postOtaCacheHint
+                        )
+                    } else {
+                        Log.w("OTA_DEBUG", "Post-OTA FW char not visible — signalled PC for cache clear (needs_cache_clear=true)")
+                    }
                 } else {
                     com.siliconlabs.bledemo.features.firmware_browser.domain.OtaFileLogger
                         .markOtaFailed(
@@ -2515,8 +2741,11 @@ class DeviceServicesActivity : BaseActivity() {
                             "power=$power/${validation.powerVersion}",
                             bluetoothGatt?.device?.address ?: bluetoothDevice?.address
                         )
+                    status.setNeedsCacheClear(false)
+                    status.setResult("FAIL", "Échec de vérification post-OTA")
+                    status.setPhase("ERROR")
+                    otaResultRecorded = true
                 }
-                otaResultRecorded = true
             }
         }
     }
@@ -2879,8 +3108,19 @@ class DeviceServicesActivity : BaseActivity() {
         private const val RECONNECT_TIMEOUT_MS = 100_000L // 100 seconds to reconnect after OTA
         private const val MAX_OTA_RETRIES = 3
         private const val POWER_TRANSFER_TIMEOUT_MS = 120_000L // 2 minutes for power serial transfer
+        // Per-write retry budget when BluetoothGatt.writeCharacteristic returns false
+        // because the GATT layer is busy. Backoff is 50 ms * attempt, so 5 attempts
+        // give the queue ~750 ms total to drain — well below the supervision timeout.
+        private const val OTA_DATA_WRITE_MAX_RETRIES = 5
+        private const val OTA_CONTROL_WRITE_MAX_RETRIES = 5
         private const val MAX_CHAR_READ_RETRIES = 10
         private const val CHAR_READ_RETRY_DELAY_MS = 2000L
+        // How many automatic in-app bond-clear + reconnect loops to try when the new
+        // post-OTA characteristic isn't visible (stale GATT cache) before falling back
+        // to an operator instruction. One pass doesn't always clear it.
+        private const val MAX_CACHE_CLEAR_ATTEMPTS = 2
+        // PC console command channel (BLE_Bridge_OTA). See PROTOCOL.md.
+        const val OTA_CMD_ACTION = "com.siliconlabs.bledemo.ota.CMD"
         private const val OPERATOR_OVERRIDE_CODE = "1900"
         private const val OTA_CONTROL_START_DELAY = 200L // needed to avoid error status 135
         private const val OTA_CONTROL_END_DELAY = 500L

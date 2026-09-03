@@ -42,6 +42,11 @@ object UiStrings {
     var otaNoFileSelected = "Aucun fichier OTA sélectionné. Veuillez redémarrer l'application et sélectionner un fichier OTA."
     var otaDeviceNotReady = "L'appareil n'est pas prêt pour l'OTA. Veuillez patienter ou déconnecter puis reconnecter."
 
+    // Post-OTA: new firmware exposes a characteristic the old one didn't, but
+    // Android's stale GATT cache hides it and can't be cleared programmatically on
+    // this platform. Not a failure — inform the operator to clear the bond + reconnect.
+    var postOtaCacheHint = "Mise à jour envoyée. La nouvelle version n'a pas pu être lue automatiquement.\n\nVeuillez supprimer l'association (menu « Delete Bond ») puis reconnecter dans l'application pour vérifier la version."
+
     // Device status
     var statusPreOta = "Connecté — Pré-OTA"
     var statusPreOtaBoth = "Connecté — Pré-OTA (Antenne + Puissance)"

@@ -38,6 +38,10 @@ class SiliconLabsDemoApplication : Application() {
         // Start mirroring OTA_DEBUG / CHAR_DUMP log tags to a persistent file
         // so production failures can be inspected after the fact.
         com.siliconlabs.bledemo.features.firmware_browser.domain.OtaFileLogger.start(this)
+
+        // Publish OTA state to ota_status.json for the PC console (BLE_Bridge_OTA)
+        // to read over adb. See BLE_Bridge_OTA/PROTOCOL.md.
+        com.siliconlabs.bledemo.features.firmware_browser.domain.OtaStatusReporter.init(this)
     }
 
     private fun registerActivityLifecycle() {
