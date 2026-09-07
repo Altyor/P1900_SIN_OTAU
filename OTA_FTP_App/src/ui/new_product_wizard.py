@@ -179,11 +179,26 @@ class _ImagePage(QWizardPage):
             QMessageBox.critical(self, "Erreur", f"Lecture du cache impossible : {e}")
 
 
+def _with_info(edit: QLineEdit, tooltip: str) -> QWidget:
+    """Pair a field with a small ⓘ marker carrying the explanation as a
+    tooltip — the field label stays short, the explanation is one hover away."""
+    row = QWidget()
+    h = QHBoxLayout(row)
+    h.setContentsMargins(0, 0, 0, 0)
+    h.addWidget(edit, stretch=1)
+    info = QLabel("ⓘ")
+    info.setToolTip(tooltip)
+    info.setCursor(Qt.CursorShape.WhatsThisCursor)
+    info.setStyleSheet("color: #6a9fb5; font-weight: 600; padding: 0 2px;")
+    h.addWidget(info)
+    return row
+
+
 class _ValidationPage(QWizardPage):
     def __init__(self):
         super().__init__()
         self.setTitle("Validation")
-        self.setSubTitle("Valeurs attendues — voir config.ini sur le serveur.")
+        self.setSubTitle("Valeurs attendues — survolez ⓘ pour le détail de chaque champ.")
         form = QFormLayout(self)
         self.pre_model = QLineEdit()
         self.post_model = QLineEdit()
@@ -191,10 +206,31 @@ class _ValidationPage(QWizardPage):
         self.antenna_version.setPlaceholderText("(vide si pas de carte antenne)")
         self.power_version = QLineEdit()
         self.power_version.setPlaceholderText("(vide si pas de carte power)")
-        form.addRow("pre_model :", self.pre_model)
-        form.addRow("post_model :", self.post_model)
-        form.addRow("antenna_version :", self.antenna_version)
-        form.addRow("power_version :", self.power_version)
+        form.addRow("Modèle avant OTA :", _with_info(
+            self.pre_model,
+            "Clé config.ini : pre_model\n\n"
+            "Le Model Number (fiche BLE 0x2a24) attendu AVANT la mise à jour. "
+            "Sert à vérifier qu'on est bien en train de flasher le bon produit."
+        ))
+        form.addRow("Modèle après OTA :", _with_info(
+            self.post_model,
+            "Clé config.ini : post_model\n\n"
+            "Le Model Number attendu APRÈS la mise à jour. Ne change que si le "
+            "firmware Power modifie ce champ — sinon, indiquez la même valeur "
+            "que « Modèle avant OTA »."
+        ))
+        form.addRow("Version antenne :", _with_info(
+            self.antenna_version,
+            "Clé config.ini : antenna_version\n\n"
+            "Version de firmware antenne attendue après l'OTA, ex. 3.13.0. "
+            "Laissez vide s'il n'y a pas de carte antenne sur ce produit."
+        ))
+        form.addRow("Version power :", _with_info(
+            self.power_version,
+            "Clé config.ini : power_version\n\n"
+            "Version de firmware power attendue après l'OTA, ex. 3.1.5. "
+            "Laissez vide s'il n'y a pas de carte power sur ce produit."
+        ))
         self.registerField("pre_model*", self.pre_model)
         self.registerField("post_model*", self.post_model)
         self.registerField("antenna_version", self.antenna_version)

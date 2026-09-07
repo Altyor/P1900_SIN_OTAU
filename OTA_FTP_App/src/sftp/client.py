@@ -12,6 +12,34 @@ import paramiko
 
 logger = logging.getLogger("SftpClient")
 
+# SFTP status errors (missing path, permission denied, ...) surface as these
+# OSError subclasses — they're real and must propagate untouched, never treated
+# as a dead transport worth reconnecting over.
+_SFTP_STATUS_ERRORS = (FileNotFoundError, PermissionError, FileExistsError,
+                        NotADirectoryError, IsADirectoryError)
+
+# Generic SFTP protocol failures (e.g. AWS Transfer Family's "Cannot rename a
+# directory", used deliberately by move_tree to detect unsupported ops) also
+# surface as a plain, errno-less OSError — same shape as a genuinely dead
+# socket. Match on text instead of type so only real transport failures
+# trigger a reconnect, not routine "server said no" responses.
+_STALE_SOCKET_PATTERNS = ("socket is closed", "connection reset", "broken pipe",
+                           "connection refused", "not connected", "connection aborted")
+
+
+def _is_stale_socket(exc: BaseException) -> bool:
+    """True for exceptions that mean the underlying transport died (idle
+    timeout, NAT/firewall drop, server restart) rather than a normal SFTP
+    status error. Worth one reconnect+retry before giving up."""
+    if isinstance(exc, _SFTP_STATUS_ERRORS):
+        return False
+    if isinstance(exc, (EOFError, paramiko.SSHException)):
+        return True
+    if isinstance(exc, OSError):
+        msg = str(exc).lower()
+        return any(p in msg for p in _STALE_SOCKET_PATTERNS)
+    return False
+
 
 class SftpClient:
     def __init__(
@@ -56,9 +84,29 @@ class SftpClient:
             allow_agent=False,
             timeout=self._timeout,
         )
+        # Idle SSH connections get silently dropped by NAT/firewalls after a
+        # few minutes. A keepalive every 30s keeps the path warm and makes a
+        # genuinely dead server detectable quickly instead of on the next
+        # write, minutes or hours later.
+        transport = ssh.get_transport()
+        if transport is not None:
+            transport.set_keepalive(30)
         self._ssh = ssh
         self._sftp = ssh.open_sftp()
         logger.info(f"SFTP connected to {self.username}@{self.host}:{self.port}")
+
+    def _with_reconnect(self, op):
+        """Run `op` (a zero-arg callable using self.sftp); if the transport
+        turns out to be dead, reconnect once and retry before giving up."""
+        try:
+            return op()
+        except Exception as e:
+            if not _is_stale_socket(e):
+                raise
+            logger.warning(f"SFTP operation failed ({e!r}); reconnecting and retrying once")
+            self.close()
+            self.connect()
+            return op()
 
     def close(self) -> None:
         try:
@@ -88,36 +136,44 @@ class SftpClient:
     # ------- primitive ops -------
 
     def exists(self, path: str) -> bool:
-        with self._lock:
+        def _op() -> bool:
             try:
                 self.sftp.stat(path)
                 return True
-            except IOError:
+            except FileNotFoundError:
                 return False
+        with self._lock:
+            return self._with_reconnect(_op)
 
     def is_dir(self, path: str) -> bool:
-        with self._lock:
+        def _op() -> bool:
             try:
                 return stat_mod.S_ISDIR(self.sftp.stat(path).st_mode)
-            except IOError:
+            except FileNotFoundError:
                 return False
+        with self._lock:
+            return self._with_reconnect(_op)
 
     def stat_size(self, path: str) -> Optional[int]:
         """Return file size in bytes, or None if path doesn't exist."""
-        with self._lock:
+        def _op() -> Optional[int]:
             try:
                 return self.sftp.stat(path).st_size
-            except IOError:
+            except FileNotFoundError:
                 return None
+        with self._lock:
+            return self._with_reconnect(_op)
 
     def listdir(self, path: str) -> Iterable[paramiko.SFTPAttributes]:
         with self._lock:
-            return self.sftp.listdir_attr(path)
+            return self._with_reconnect(lambda: self.sftp.listdir_attr(path))
 
     def mkdir_p(self, path: str) -> None:
-        with self._lock:
+        def _op() -> None:
             if not self.exists(path):
                 self.sftp.mkdir(path)
+        with self._lock:
+            self._with_reconnect(_op)
 
     def mkdirs(self, path: str) -> None:
         parts = path.strip("/").split("/")
@@ -127,39 +183,45 @@ class SftpClient:
             self.mkdir_p(cur)
 
     def read_text(self, path: str, encoding: str = "utf-8") -> str:
-        with self._lock:
+        def _op() -> str:
             with self.sftp.open(path, "rb") as f:
                 return f.read().decode(encoding)
+        with self._lock:
+            return self._with_reconnect(_op)
 
     def write_text(self, path: str, text: str, encoding: str = "utf-8") -> None:
-        with self._lock:
+        def _op() -> None:
             with self.sftp.open(path, "wb") as f:
                 f.write(text.encode(encoding))
+        with self._lock:
+            self._with_reconnect(_op)
 
     def read_bytes(self, path: str) -> bytes:
-        with self._lock:
+        def _op() -> bytes:
             with self.sftp.open(path, "rb") as f:
                 return f.read()
+        with self._lock:
+            return self._with_reconnect(_op)
 
     def upload(self, local_path: str, remote_path: str) -> None:
         with self._lock:
-            self.sftp.put(local_path, remote_path)
+            self._with_reconnect(lambda: self.sftp.put(local_path, remote_path))
 
     def download(self, remote_path: str, local_path: str) -> None:
         with self._lock:
-            self.sftp.get(remote_path, local_path)
+            self._with_reconnect(lambda: self.sftp.get(remote_path, local_path))
 
     def remove(self, path: str) -> None:
         with self._lock:
-            self.sftp.remove(path)
+            self._with_reconnect(lambda: self.sftp.remove(path))
 
     def rename(self, old_path: str, new_path: str) -> None:
         with self._lock:
-            self.sftp.rename(old_path, new_path)
+            self._with_reconnect(lambda: self.sftp.rename(old_path, new_path))
 
     def rmdir(self, path: str) -> None:
         with self._lock:
-            self.sftp.rmdir(path)
+            self._with_reconnect(lambda: self.sftp.rmdir(path))
 
     def move_tree(self, src: str, dst: str) -> None:
         """Move src → dst. Tries an atomic directory rename first; if the server
