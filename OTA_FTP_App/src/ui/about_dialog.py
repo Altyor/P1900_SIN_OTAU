@@ -18,7 +18,8 @@ SHORTCUTS = (
 
 class AboutDialog(QDialog):
     def __init__(self, secrets_path: Path, image_cache_path: Path,
-                  settings_path: Path, sftp_summary: str, parent=None):
+                  settings_path: Path, crash_log_path: Path,
+                  sftp_summary: str, parent=None):
         super().__init__(parent)
         self.setWindowTitle("À propos")
         self.setMinimumWidth(560)
@@ -49,6 +50,7 @@ class AboutDialog(QDialog):
             ("Secrets chiffrés :", secrets_path),
             ("Cache des images :", image_cache_path),
             ("Préférences :",      settings_path),
+            ("Journal d'erreurs :", crash_log_path),
         ):
             v = QLabel(str(p))
             v.setStyleSheet("font-family: 'Consolas', monospace;")

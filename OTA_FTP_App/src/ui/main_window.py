@@ -121,6 +121,7 @@ class MainWindow(QMainWindow):
             secrets_path=self.settings.path.with_name("secrets.bin"),
             image_cache_path=self.image_cache.dir,
             settings_path=self.settings.path,
+            crash_log_path=self.settings.path.with_name("crash.log"),
             sftp_summary=sftp_summary,
             parent=self,
         )

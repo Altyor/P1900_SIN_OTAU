@@ -2,12 +2,31 @@
 from __future__ import annotations
 import faulthandler
 import logging
+import os
 import sys
+from datetime import datetime
 from pathlib import Path
 
-# Dump a C-level stack trace to stderr on SIGSEGV / abort / Windows access violation.
-# Survives even when Python's exception machinery can't (e.g. crashes inside Qt).
-faulthandler.enable()
+
+def _crash_log_path() -> Path:
+    """Where unhandled crashes get appended. Lives in APPDATA so it survives
+    the EXE being relaunched / replaced. Created lazily."""
+    base = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming"))
+    d = base / "P1900_Production_Manager"
+    d.mkdir(parents=True, exist_ok=True)
+    return d / "crash.log"
+
+
+# Open the crash log eagerly so faulthandler has a real stream to write into.
+# In `--windowed` PyInstaller bundles sys.stderr is None, which would make
+# faulthandler.enable() raise; routing to a file makes it work everywhere.
+try:
+    _crash_stream = open(_crash_log_path(), "a", buffering=1, encoding="utf-8")
+except Exception:
+    _crash_stream = None
+
+if _crash_stream is not None:
+    faulthandler.enable(file=_crash_stream)
 
 
 def _log_unhandled(exc_type, exc_value, exc_tb):
@@ -15,9 +34,22 @@ def _log_unhandled(exc_type, exc_value, exc_tb):
     aborts the process when a Python exception bubbles into the C++ event loop,
     so logging it here is what lets us diagnose that class of crash."""
     import traceback
-    msg = "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
-    sys.stderr.write("\n=== UNHANDLED EXCEPTION ===\n" + msg + "===========================\n")
-    sys.stderr.flush()
+    header = f"\n=== UNHANDLED EXCEPTION @ {datetime.now().isoformat(timespec='seconds')} ===\n"
+    msg = header + "".join(traceback.format_exception(exc_type, exc_value, exc_tb)) + (
+        "===========================\n"
+    )
+    if _crash_stream is not None:
+        try:
+            _crash_stream.write(msg)
+            _crash_stream.flush()
+        except Exception:
+            pass
+    if sys.stderr is not None:
+        try:
+            sys.stderr.write(msg)
+            sys.stderr.flush()
+        except Exception:
+            pass
 
 
 sys.excepthook = _log_unhandled
