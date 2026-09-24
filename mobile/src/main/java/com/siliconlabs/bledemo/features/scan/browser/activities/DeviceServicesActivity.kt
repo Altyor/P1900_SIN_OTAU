@@ -101,6 +101,8 @@ class DeviceServicesActivity : BaseActivity() {
     // checkAllVersionsMatch from firing markOtaSuccess/Failed multiple times.
     private var otaWasRun = false
     private var otaResultRecorded = false
+    // Start of the current OTA attempt, for the history record (set with otaWasRun).
+    private var otaStartMillis: Long? = null
     private var discoveryPending = false
     private var mtuReadType = MtuReadType.VIEW_INITIALIZATION
     private var isLogFragmentOn = false
@@ -1336,6 +1338,7 @@ class DeviceServicesActivity : BaseActivity() {
                 .markOtaStarted()
             otaWasRun = true
             otaResultRecorded = false
+            otaStartMillis = System.currentTimeMillis()
         }
         otaInProgress = true
 
@@ -2214,6 +2217,23 @@ class DeviceServicesActivity : BaseActivity() {
     private fun reconnect(requestRssiUpdates: Boolean = false) {
         bluetoothDevice = bluetoothGatt?.device
 
+        // Every post-OTA reboot path (antenna reboot, power-PCB kick, power
+        // transfer timeout, handoff drop, retries) comes through here. Forget
+        // the DIS values read before the reboot so the post-OTA verdict can
+        // only use fresh reads from the new firmware — otherwise the first
+        // fresh read triggers the verdict against stale values (seen
+        // 2026-09-24: FW 2.0.0 read fresh, model still the pre-OTA
+        // "SIN-4-1-21" → FAIL recorded; model re-read as "MR276B" 1.6 s later
+        // → green tick on screen). The display keeps the old text until the
+        // new reads land.
+        if (otaWasRun) {
+            Log.d("OTA_DEBUG", "reconnect: clearing pre-reboot DIS reads (model=$modelNumber, fw=$firmwareVersion)")
+            modelNumber = null
+            firmwareVersion = null
+            firmwareVersionAntenna = null
+            firmwareVersionPower = null
+        }
+
         handler.postDelayed({
             runOnUiThread { otaLoadingDialog?.updateMessage(getString(R.string.attempting_connection)) }
             bluetoothDevice?.let { device ->
@@ -2566,6 +2586,7 @@ class DeviceServicesActivity : BaseActivity() {
         cacheHintShown = false
         otaWasRun = false
         otaResultRecorded = false
+        otaStartMillis = null
         Log.d("OTA_DEBUG", "OTA state reset for new device session (cardType=${selection.cardType}, pendingSecondOta=${selection.pendingSecondOta})")
     }
 
@@ -2678,6 +2699,19 @@ class DeviceServicesActivity : BaseActivity() {
             val cardType = com.siliconlabs.bledemo.features.firmware_browser.domain.FirmwareSelection.cardType
             val checks = validation.fieldsToCheck(cardType)
 
+            // Post-OTA, don't decide until the firmware version has also been
+            // re-read (model alone arriving first is not enough — reconnect()
+            // cleared both). Exception: the FW characteristic isn't visible at
+            // all (stale GATT cache) — fall through so the cache-clear branch
+            // below handles it instead of waiting forever.
+            val fwChecked = "antenna_version" in checks || "power_version" in checks
+            if (otaCompleted && !otaResultRecorded && fwChecked &&
+                antenna == null && power == null && getFirmwareVersionCharacteristic() != null
+            ) {
+                Log.d("OTA_DEBUG", "Post-OTA verify: waiting for fresh firmware version read")
+                return@runOnUiThread
+            }
+
             val expectedModel = if (otaCompleted) validation.postModel else validation.preModel
             // Pre-OTA: gate on pre_model (device must be in starting state).
             // Post-OTA: only require post_model match if this scenario validates it.
@@ -2709,6 +2743,8 @@ class DeviceServicesActivity : BaseActivity() {
                 if (modelMatch && antennaMatch && powerMatch) {
                     com.siliconlabs.bledemo.features.firmware_browser.domain.OtaFileLogger
                         .markOtaSuccess()
+                    recordOtaHistory(result = "PASS", failureReason = null, model = model,
+                        antenna = antenna, power = power, expectedModel = expectedModel, validation = validation)
                     status.setNeedsCacheClear(false)
                     status.setResult("PASS", "Mise à jour vérifiée")
                     status.setPhase("DONE")
@@ -2734,13 +2770,16 @@ class DeviceServicesActivity : BaseActivity() {
                         Log.w("OTA_DEBUG", "Post-OTA FW char not visible — signalled PC for cache clear (needs_cache_clear=true)")
                     }
                 } else {
+                    val failureReason = "Post-OTA verify mismatch: model=$model/$expectedModel " +
+                        "antenna=$antenna/${validation.antennaVersion} " +
+                        "power=$power/${validation.powerVersion}"
                     com.siliconlabs.bledemo.features.firmware_browser.domain.OtaFileLogger
                         .markOtaFailed(
-                            "Post-OTA verify mismatch: model=$model/$expectedModel " +
-                            "antenna=$antenna/${validation.antennaVersion} " +
-                            "power=$power/${validation.powerVersion}",
+                            failureReason,
                             bluetoothGatt?.device?.address ?: bluetoothDevice?.address
                         )
+                    recordOtaHistory(result = "FAIL", failureReason = failureReason, model = model,
+                        antenna = antenna, power = power, expectedModel = expectedModel, validation = validation)
                     status.setNeedsCacheClear(false)
                     status.setResult("FAIL", "Échec de vérification post-OTA")
                     status.setPhase("ERROR")
@@ -2748,6 +2787,45 @@ class DeviceServicesActivity : BaseActivity() {
                 }
             }
         }
+    }
+
+    /** Persists the just-decided PASS/FAIL verdict to the local OTA history store. */
+    private fun recordOtaHistory(
+        result: String,
+        failureReason: String?,
+        model: String?,
+        antenna: String?,
+        power: String?,
+        expectedModel: String?,
+        validation: com.siliconlabs.bledemo.features.firmware_browser.domain.FirmwareValidation
+    ) {
+        val selection = com.siliconlabs.bledemo.features.firmware_browser.domain.FirmwareSelection
+        com.siliconlabs.bledemo.features.firmware_browser.domain.OtaHistoryStore.record(
+            com.siliconlabs.bledemo.features.firmware_browser.domain.OtaHistoryRecord(
+                timestampMillis = System.currentTimeMillis(),
+                timestampIso = com.siliconlabs.bledemo.features.firmware_browser.domain.OtaHistoryRecord.nowIso(),
+                otaStartMillis = otaStartMillis,
+                batchNumber = selection.batchNumber,
+                deviceMac = bluetoothGatt?.device?.address ?: bluetoothDevice?.address,
+                productName = selection.productName,
+                pnName = selection.pnName,
+                cardType = selection.cardType?.name,
+                modelNumber = model,
+                firmwareVersionAntenna = antenna,
+                firmwareVersionPower = power,
+                expectedModel = expectedModel,
+                expectedAntenna = validation.antennaVersion,
+                expectedPower = validation.powerVersion,
+                result = result,
+                failureReason = failureReason,
+                tabletId = com.siliconlabs.bledemo.features.firmware_browser.domain.TabletId.get(this),
+                appVersion = try {
+                    packageManager.getPackageInfo(packageName, 0).versionName
+                } catch (e: Exception) {
+                    null
+                }
+            )
+        )
     }
 
     private var spinAnimation: android.view.animation.Animation? = null

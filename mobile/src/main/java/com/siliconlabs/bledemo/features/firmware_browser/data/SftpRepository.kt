@@ -1,5 +1,6 @@
 package com.siliconlabs.bledemo.features.firmware_browser.data
 
+import com.siliconlabs.bledemo.features.firmware_browser.domain.AppSettingsData
 import com.siliconlabs.bledemo.features.firmware_browser.domain.CardType
 import com.siliconlabs.bledemo.features.firmware_browser.domain.FirmwareValidation
 import com.siliconlabs.bledemo.features.firmware_browser.domain.PnInfo
@@ -17,4 +18,7 @@ interface SftpRepository {
         cardType: CardType,
         cacheDir: File
     ): Result<File>
+
+    /** Reads a product's own settings (e.g. batch-number regex) from `{product}/app_settings.ini`. */
+    suspend fun fetchAppSettings(product: ProductInfo): Result<AppSettingsData>
 }

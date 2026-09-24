@@ -6,6 +6,10 @@ import com.siliconlabs.bledemo.features.firmware_browser.domain.PnInfo
 import com.siliconlabs.bledemo.features.firmware_browser.domain.ProductInfo
 
 sealed class FirmwareBrowserUiState {
+    data class BatchEntry(
+        val product: ProductInfo,
+        val error: String? = null
+    ) : FirmwareBrowserUiState()
     data object Loading : FirmwareBrowserUiState()
     data class ProductList(val products: List<ProductInfo>) : FirmwareBrowserUiState()
     data class PnSelection(

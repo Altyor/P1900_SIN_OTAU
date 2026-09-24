@@ -34,6 +34,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -68,7 +71,8 @@ fun FirmwareBrowserScreen(
                 title = { Text(UiStrings.firmwareBrowserTitle) },
                 navigationIcon = {
                     val state = uiState
-                    if (state is FirmwareBrowserUiState.PnSelection ||
+                    if (state is FirmwareBrowserUiState.BatchEntry ||
+                        state is FirmwareBrowserUiState.PnSelection ||
                         state is FirmwareBrowserUiState.CardSelection
                     ) {
                         IconButton(onClick = { viewModel.goBack() }) {
@@ -93,6 +97,11 @@ fun FirmwareBrowserScreen(
                 .padding(padding)
         ) {
             when (val state = uiState) {
+                is FirmwareBrowserUiState.BatchEntry -> BatchEntryContent(
+                    productName = state.product.name,
+                    errorMessage = state.error,
+                    onConfirm = { viewModel.confirmBatchNumber(it) }
+                )
                 is FirmwareBrowserUiState.Loading -> LoadingContent()
                 is FirmwareBrowserUiState.ProductList -> ProductListContent(
                     products = state.products,
@@ -125,6 +134,54 @@ fun FirmwareBrowserScreen(
                     onRetry = { viewModel.retry() }
                 )
             }
+        }
+    }
+}
+
+@Composable
+private fun BatchEntryContent(
+    productName: String,
+    errorMessage: String?,
+    onConfirm: (String) -> Unit
+) {
+    var batchNumber by remember { mutableStateOf("") }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        Text(
+            text = String.format(UiStrings.batchEntryTitle, productName),
+            style = MaterialTheme.typography.titleLarge,
+            fontWeight = FontWeight.Bold,
+            textAlign = TextAlign.Center
+        )
+        Spacer(modifier = Modifier.height(24.dp))
+        androidx.compose.material3.OutlinedTextField(
+            value = batchNumber,
+            onValueChange = { batchNumber = it },
+            label = { Text(UiStrings.batchNumberHint) },
+            isError = errorMessage != null,
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth()
+        )
+        if (errorMessage != null) {
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                text = errorMessage,
+                color = MaterialTheme.colorScheme.error,
+                style = MaterialTheme.typography.bodyMedium
+            )
+        }
+        Spacer(modifier = Modifier.height(24.dp))
+        Button(
+            onClick = { onConfirm(batchNumber) },
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text(UiStrings.batchEntryConfirm)
         }
     }
 }

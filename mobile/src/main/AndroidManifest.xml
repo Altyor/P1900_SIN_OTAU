@@ -159,6 +159,12 @@
             android:name=".features.scan.browser.activities.DeviceServicesActivity"
             android:screenOrientation="sensorPortrait"
             tools:ignore="DiscouragedApi" />
+        <activity
+            android:theme="@style/MainAppTheme.NoActionBar"
+            android:name=".features.firmware_browser.presentation.OtaHistoryActivity"
+            android:screenOrientation="sensorPortrait"
+            android:exported="false"
+            tools:ignore="DiscouragedApi" />
         <!--E2E done-->
         <activity
             android:theme="@style/MainAppTheme.NoActionBar"

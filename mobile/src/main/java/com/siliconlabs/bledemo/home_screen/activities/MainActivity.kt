@@ -97,6 +97,11 @@ open class MainActivity : BaseActivity(),
             launchFirmwareBrowser(force = true)
         }
 
+        _binding.fabOtaHistory.text = com.siliconlabs.bledemo.features.firmware_browser.domain.UiStrings.otaHistoryButtonLabel
+        _binding.fabOtaHistory.setOnClickListener {
+            startActivity(Intent(this, com.siliconlabs.bledemo.features.firmware_browser.presentation.OtaHistoryActivity::class.java))
+        }
+
         // Register the receiver
         val filter = IntentFilter(ACTION_SHOW_CUSTOM_TOAST)
         LocalBroadcastManager.getInstance(this).registerReceiver(toastReceiver, filter)

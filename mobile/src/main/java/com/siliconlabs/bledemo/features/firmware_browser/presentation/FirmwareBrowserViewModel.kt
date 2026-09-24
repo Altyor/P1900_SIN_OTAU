@@ -4,6 +4,7 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.siliconlabs.bledemo.features.firmware_browser.data.SftpRepository
+import com.siliconlabs.bledemo.features.firmware_browser.domain.AppSettings
 import com.siliconlabs.bledemo.features.firmware_browser.domain.CardType
 import com.siliconlabs.bledemo.features.firmware_browser.domain.FirmwareSelection
 import com.siliconlabs.bledemo.features.firmware_browser.domain.PnInfo
@@ -59,8 +60,55 @@ class FirmwareBrowserViewModel @Inject constructor(
         }
     }
 
+    /**
+     * Product first, then batch number — the batch-number format (regex) is
+     * defined per product, so we can't validate it before knowing which
+     * product was picked. Source of truth: the product's `app_settings.ini`
+     * on SFTP (the MySQL database holds OTA history only). This is a hard
+     * gate: if settings can't be fetched/validated at all (missing,
+     * unreachable, malformed regex, ...) the operator cannot proceed for this
+     * product. We can't guarantee the batch number will be validated
+     * correctly otherwise, and silently allowing any format would be worse
+     * than blocking.
+     */
     fun selectProduct(product: ProductInfo) {
         selectedProduct = product
+        _uiState.value = FirmwareBrowserUiState.Loading
+        viewModelScope.launch {
+            sftpRepository.fetchAppSettings(product)
+                .onSuccess { data ->
+                    AppSettings.update(data)
+                    _uiState.value = FirmwareBrowserUiState.BatchEntry(product)
+                }
+                .onFailure { e ->
+                    _uiState.value = FirmwareBrowserUiState.Error(
+                        "${UiStrings.missingAppSettings} (${product.name}) : ${e.message}"
+                    )
+                }
+        }
+    }
+
+    /**
+     * Batch number must be (re)typed for every product selection — it is
+     * never pre-filled from a previous session, so an operator can't
+     * accidentally flash a new batch under an old batch number.
+     */
+    fun confirmBatchNumber(batchNumber: String) {
+        val product = (_uiState.value as? FirmwareBrowserUiState.BatchEntry)?.product ?: return
+        val trimmed = batchNumber.trim()
+        if (trimmed.isEmpty()) {
+            _uiState.value = FirmwareBrowserUiState.BatchEntry(product, error = UiStrings.batchEntryRequired)
+            return
+        }
+        if (!AppSettings.validateBatchNumber(trimmed)) {
+            _uiState.value = FirmwareBrowserUiState.BatchEntry(product, error = UiStrings.batchEntryInvalidFormat)
+            return
+        }
+        FirmwareSelection.batchNumber = trimmed
+        loadPnsFor(product)
+    }
+
+    private fun loadPnsFor(product: ProductInfo) {
         _uiState.value = FirmwareBrowserUiState.Loading
         viewModelScope.launch {
             sftpRepository.listPns(product)
@@ -198,6 +246,7 @@ class FirmwareBrowserViewModel @Inject constructor(
     fun goBack() {
         val currentState = _uiState.value
         when (currentState) {
+            is FirmwareBrowserUiState.BatchEntry -> loadProducts()
             is FirmwareBrowserUiState.PnSelection -> loadProducts()
             is FirmwareBrowserUiState.CardSelection -> {
                 val product = selectedProduct

@@ -42,6 +42,10 @@ class SiliconLabsDemoApplication : Application() {
         // Publish OTA state to ota_status.json for the PC console (BLE_Bridge_OTA)
         // to read over adb. See BLE_Bridge_OTA/PROTOCOL.md.
         com.siliconlabs.bledemo.features.firmware_browser.domain.OtaStatusReporter.init(this)
+
+        // Local record of every completed OTA attempt (pass/fail), pending a
+        // central/SFTP sync once write access to the server is available.
+        com.siliconlabs.bledemo.features.firmware_browser.domain.OtaHistoryStore.init(this)
     }
 
     private fun registerActivityLifecycle() {

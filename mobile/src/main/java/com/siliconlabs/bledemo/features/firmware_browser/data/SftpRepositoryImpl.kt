@@ -2,6 +2,7 @@ package com.siliconlabs.bledemo.features.firmware_browser.data
 
 import android.util.Log
 import com.siliconlabs.bledemo.bluetooth.beacon_utils.BleFormat
+import com.siliconlabs.bledemo.features.firmware_browser.domain.AppSettingsData
 import com.siliconlabs.bledemo.features.firmware_browser.domain.CardType
 import com.siliconlabs.bledemo.features.firmware_browser.domain.FirmwareValidation
 import com.siliconlabs.bledemo.features.firmware_browser.domain.PnInfo
@@ -25,6 +26,7 @@ class SftpRepositoryImpl : SftpRepository {
         private const val CONNECT_TIMEOUT_MS = 15_000
         private const val CONFIG_FILENAME = "config.ini"
         private const val PRODUCT_IMAGE_FILENAME = "product.png"
+        private const val APP_SETTINGS_FILENAME = "app_settings.ini"
         private val FIRMWARE_EXTENSIONS = setOf("gbl", "zigbee")
 
         init {
@@ -189,6 +191,34 @@ class SftpRepositoryImpl : SftpRepository {
         }
     }
 
+    /**
+     * Reads `{root}/{product}/app_settings.ini` — per-product, operator-editable
+     * config (currently just the batch-number regex). This is a hard gate, not
+     * a best-effort read: a missing/unreachable file, a missing
+     * `[batch_number]`/`regex` entry, a blank regex, or a regex that fails to
+     * compile ALL fail the whole call — callers must block the operator on any
+     * failure here rather than silently allowing an unvalidated batch number.
+     */
+    override suspend fun fetchAppSettings(product: ProductInfo): Result<AppSettingsData> = withContext(Dispatchers.IO) {
+        runCatching {
+            val sftp = getOrCreateSftp()
+            val path = "${SftpConfig.ROOT_DIR}/${product.name}/$APP_SETTINGS_FILENAME"
+            val lines = BufferedReader(InputStreamReader(sftp.open(path).RemoteFileInputStream())).readLines()
+            val sections = parseIniSections(lines)
+            val regex = sections["batch_number"]?.get("regex")
+                ?.takeIf { it.isNotBlank() }
+                ?: throw IllegalStateException("Missing or empty [batch_number] regex")
+            try {
+                Regex(regex)
+            } catch (e: Exception) {
+                throw IllegalStateException("Invalid [batch_number] regex \"$regex\": ${e.message}")
+            }
+            AppSettingsData(batchNumberRegex = regex)
+        }.onFailure {
+            Log.w(TAG, "Failed to fetch/validate ${product.name}/app_settings.ini: ${it.message}")
+        }
+    }
+
     /** Builds the FW path: with PN → {root}/{product}/{pn}/FW, without PN → {root}/{product}/FW */
     private fun fwPath(product: ProductInfo, pn: PnInfo): String {
         return if (pn.isDirect) {
@@ -198,7 +228,8 @@ class SftpRepositoryImpl : SftpRepository {
         }
     }
 
-    private fun parseConfigIni(lines: List<String>): FirmwareValidation {
+    /** Generic `[section]` / `key=value` INI parser, shared by config.ini and app_settings.ini. */
+    private fun parseIniSections(lines: List<String>): Map<String, Map<String, String>> {
         val sections = mutableMapOf<String, MutableMap<String, String>>()
         var currentSection = ""
         for (line in lines) {
@@ -216,6 +247,11 @@ class SftpRepositoryImpl : SftpRepository {
                 sections.getOrPut(currentSection) { mutableMapOf() }[key] = value
             }
         }
+        return sections
+    }
+
+    private fun parseConfigIni(lines: List<String>): FirmwareValidation {
+        val sections = parseIniSections(lines)
         val v = sections["validation"] ?: emptyMap()
         // Missing [after_*] section → null → caller falls back to "validate everything" (legacy behavior).
         // Present-but-empty `check=` → empty set → validate nothing for that scenario.

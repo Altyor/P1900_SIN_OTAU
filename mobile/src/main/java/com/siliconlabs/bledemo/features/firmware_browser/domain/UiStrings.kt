@@ -67,4 +67,26 @@ object UiStrings {
     // Toast messages
     var firmwareSelected = "Firmware sélectionné et prêt pour l'OTA"
     var noFirmwareSelected = "Aucun firmware sélectionné"
+
+    // Batch number (OTA history)
+    var batchNumberHint = "Numéro de production"
+    var batchEntryTitle = "Saisir le numéro de production pour %s"
+    var batchEntryConfirm = "Continuer"
+    var batchEntryRequired = "Le numéro de production est obligatoire."
+    var batchEntryInvalidFormat = "Format de numéro de production invalide."
+    var missingAppSettings = "Fichier app_settings.ini manquant, illisible ou invalide pour ce produit. Impossible de continuer"
+
+    // OTA history screen
+    var otaHistoryButtonLabel = "Historique OTA"
+    var otaHistoryTitle = "Historique des mises à jour OTA"
+    var otaHistoryTabletId = "ID tablette : %s"
+    var otaHistoryFilterHint = "Filtrer par numéro de production"
+    var otaHistoryExportCsv = "Exporter en CSV"
+    var otaHistoryEmpty = "Aucune mise à jour enregistrée."
+    var otaHistoryNoMatch = "Aucun résultat pour ce numéro de production."
+    var otaHistoryItemBatch = "N° de production : %s"
+    var otaHistoryExportSuccess = "Export CSV enregistré : %s"
+    var otaHistoryExportFailed = "Échec de l'export CSV"
+    var otaHistoryResultPass = "Réussite"
+    var otaHistoryResultFail = "Échec"
 }

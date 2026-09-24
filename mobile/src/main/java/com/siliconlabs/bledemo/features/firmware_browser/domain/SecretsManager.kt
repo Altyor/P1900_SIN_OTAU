@@ -22,7 +22,7 @@ import javax.crypto.spec.GCMParameterSpec
  * 4. Stores encrypted data in app-private storage
  * 5. Securely deletes the plaintext INI
  *
- * INI format:
+ * INI format (any number of sections; add new ones here as new secrets are needed):
  * [SFTP]
  * host=sftp.altyor.solutions
  * port=22
@@ -32,6 +32,13 @@ import javax.crypto.spec.GCMParameterSpec
  * -----END OPENSSH PRIVATE KEY-----
  * key_passphrase=your_passphrase
  * root_dir=/production
+ *
+ * [MYSQL]
+ * host=<server>.mysql.database.azure.com
+ * port=3306
+ * database=<database name>
+ * username=<least-privilege OTA account — see docs/ota_database_schema.sql>
+ * password=<password>
  */
 object SecretsManager {
 
@@ -111,7 +118,22 @@ object SecretsManager {
             val lines = iniFile.readLines()
             val parsed = parseIni(lines)
 
-            // Merge with existing secrets
+            // import runs before the encrypted store is loaded (load() is
+            // called at app start with nothing in memory), so read the store
+            // first — otherwise an INI carrying only a new section (e.g.
+            // [MYSQL]) would overwrite and lose the existing ones (e.g. [SFTP]).
+            val encFile = File(context.filesDir, ENCRYPTED_FILE)
+            if (encFile.exists()) {
+                try {
+                    parseJson(String(decrypt(encFile.readBytes()))).forEach { (section, entries) ->
+                        secrets.getOrPut(section) { mutableMapOf() }.putAll(entries)
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "Existing encrypted secrets unreadable; importing INI alone: ${e.message}")
+                }
+            }
+
+            // Merge with existing secrets (INI values win)
             for ((section, entries) in parsed) {
                 secrets.getOrPut(section) { mutableMapOf() }.putAll(entries)
             }

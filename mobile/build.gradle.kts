@@ -83,8 +83,8 @@ android {
         create("Si-Connect") {
             dimension = versionDim
             applicationId = "com.siliconlabs.bledemo"
-            versionCode = 76
-            versionName = "3.2.2"
+            versionCode = 77
+            versionName = "3.2.3"
         }
     }
 
@@ -236,6 +236,11 @@ dependencies {
     implementation ("com.daimajia.swipelayout:library:1.2.0@aar")
     //Material Design
     implementation("com.google.android.material:material:1.12.0")
+
+    //OTA history / product settings — direct MySQL (Azure). Must stay on the
+    //1.x (Java 7) line: 2.x+ needs java.sql.DriverAction, absent on Android
+    //("Failed resolution of: Ljava/sql/DriverAction;" at first connect).
+    implementation("org.mariadb.jdbc:mariadb-java-client:1.8.0")
 
     implementation ("org.eclipse.paho:org.eclipse.paho.client.mqttv3:1.2.5")
     implementation ("io.github.mayzs:paho.mqtt.android:1.2.1")

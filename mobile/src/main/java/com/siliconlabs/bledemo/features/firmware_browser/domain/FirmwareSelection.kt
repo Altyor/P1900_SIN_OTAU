@@ -11,6 +11,12 @@ object FirmwareSelection {
     var secondFileName: String = ""
     var pendingSecondOta: Boolean = false
 
+    // Entered by the operator at the start of every firmware-selection flow
+    // (see FirmwareBrowserViewModel.BatchEntry). Never remembered/pre-filled
+    // across selections — must be typed fresh each time to avoid an old batch
+    // being silently reused against a new one.
+    var batchNumber: String = ""
+
     fun isSelected(): Boolean = productName.isNotEmpty() && fileName.isNotEmpty()
 
     fun clear() {
@@ -21,5 +27,6 @@ object FirmwareSelection {
         secondFilePath = ""
         secondFileName = ""
         pendingSecondOta = false
+        batchNumber = ""
     }
 }

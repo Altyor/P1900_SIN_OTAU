@@ -73,6 +73,16 @@
             android:text="Changer de produit"
             app:icon="@android:drawable/stat_sys_download" />
 
+        <com.siliconlabs.bledemo.common.views.MainActionButton
+            android:id="@+id/fab_ota_history"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_alignParentEnd="true"
+            android:layout_alignParentBottom="true"
+            android:layout_margin="@dimen/extended_fab_margin"
+            android:text="Historique OTA"
+            app:icon="@android:drawable/ic_menu_recent_history" />
+
     </RelativeLayout>
 
     <com.siliconlabs.bledemo.home_screen.views.HidableBottomNavigationView
