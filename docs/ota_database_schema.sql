@@ -9,7 +9,7 @@ CREATE TABLE IF NOT EXISTS ota_history (
     id                       BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
     ota_start                DATETIME        NULL,      -- first upload of this attempt (NULL if unknown)
     ota_end                  DATETIME        NOT NULL,  -- PASS/FAIL verdict given
-    result                   VARCHAR(16)     NOT NULL,  -- PASS / FAIL
+    result                   VARCHAR(16)     NOT NULL,  -- PASS / FAIL / ABANDONED (OTA launched, no verdict)
     batch_number             VARCHAR(64)     NOT NULL,
     product_name             VARCHAR(128)    NOT NULL,
     pn_name                  VARCHAR(128)    NOT NULL,

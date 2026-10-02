@@ -53,16 +53,30 @@ class OtaHistorySyncWorker(context: Context, params: WorkerParameters) :
         private const val WORK_NAME = "ota_history_sync"
 
         fun enqueue(context: Context) {
-            val request = OneTimeWorkRequestBuilder<OtaHistorySyncWorker>()
-                .setConstraints(
-                    Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build()
-                )
-                .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.SECONDS)
-                .build()
             // APPEND_OR_REPLACE: a record queued while a sync is already
             // running still gets its own pass afterwards (KEEP would drop it).
             WorkManager.getInstance(context)
-                .enqueueUniqueWork(WORK_NAME, ExistingWorkPolicy.APPEND_OR_REPLACE, request)
+                .enqueueUniqueWork(WORK_NAME, ExistingWorkPolicy.APPEND_OR_REPLACE, buildRequest())
         }
+
+        /** Operator-requested retry: replaces a sync waiting out its backoff
+         *  (which can grow to hours) so it runs as soon as there is network.
+         *  Cancelling one mid-insert is harmless: INSERT IGNORE skips re-sends. */
+        fun syncNow(context: Context) {
+            WorkManager.getInstance(context)
+                .enqueueUniqueWork(WORK_NAME, ExistingWorkPolicy.REPLACE, buildRequest())
+        }
+
+        /** Emits whenever the sync job changes state, e.g. to refresh a
+         *  pending-records warning once a pass has finished. */
+        fun observe(context: Context) =
+            WorkManager.getInstance(context).getWorkInfosForUniqueWorkLiveData(WORK_NAME)
+
+        private fun buildRequest() = OneTimeWorkRequestBuilder<OtaHistorySyncWorker>()
+            .setConstraints(
+                Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build()
+            )
+            .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.SECONDS)
+            .build()
     }
 }

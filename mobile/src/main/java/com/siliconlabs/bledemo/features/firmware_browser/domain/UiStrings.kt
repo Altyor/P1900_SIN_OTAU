@@ -89,4 +89,17 @@ object UiStrings {
     var otaHistoryExportFailed = "Échec de l'export CSV"
     var otaHistoryResultPass = "Réussite"
     var otaHistoryResultFail = "Échec"
+    var otaHistoryResultAbandoned = "Non terminée"
+
+    // ABANDONED history record: OTA launched, screen closed with no verdict
+    var otaAbandonedNoUpload = "OTA non terminée : aucun envoi (ancien firmware probable)"
+    var otaAbandonedUpload = "OTA non terminée : envoi interrompu à %.1f %%"
+    var otaAbandonedVerify = "OTA non terminée : envoi fini, vérification non faite"
+    var otaAbandonedDisconnect = "Déconnexion inattendue (status=%d)"
+    var otaAbandonedRetries = "Échec après %d tentatives"
+    var otaHistoryPendingWarning = "%d enregistrement(s) non envoyé(s) à la base de données (le plus ancien : %s).\nVérifier la connexion Wi-Fi de la tablette."
+    var otaHistoryUnreadableWarning = "%d enregistrement(s) illisible(s), jamais envoyé(s). Prévenir le responsable."
+    var otaHistoryRetrySync = "Réessayer l'envoi"
+    var otaHistoryRetryStarted = "Envoi relancé"
+    var otaHistoryButtonPending = "Historique OTA (%d non envoyé(s))"
 }

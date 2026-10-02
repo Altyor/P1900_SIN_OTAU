@@ -101,6 +101,9 @@ open class MainActivity : BaseActivity(),
         _binding.fabOtaHistory.setOnClickListener {
             startActivity(Intent(this, com.siliconlabs.bledemo.features.firmware_browser.presentation.OtaHistoryActivity::class.java))
         }
+        otaHistoryFabTint = _binding.fabOtaHistory.backgroundTintList
+        com.siliconlabs.bledemo.features.firmware_browser.domain.OtaHistorySyncWorker.observe(this)
+            .observe(this) { refreshOtaHistoryFab() }
 
         // Register the receiver
         val filter = IntentFilter(ACTION_SHOW_CUSTOM_TOAST)
@@ -114,6 +117,27 @@ open class MainActivity : BaseActivity(),
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 viewModel.setAreBluetoothPermissionsGranted(areBluetoothPermissionsGranted())
             }
+        }
+        refreshOtaHistoryFab()
+    }
+
+    private var otaHistoryFabTint: android.content.res.ColorStateList? = null
+
+    /** Red + count while OTA records are still only on this tablet, so an
+     *  offline tablet is noticed on the main screen, not days later. */
+    private fun refreshOtaHistoryFab() {
+        val store = com.siliconlabs.bledemo.features.firmware_browser.domain.OtaHistoryStore
+        val strings = com.siliconlabs.bledemo.features.firmware_browser.domain.UiStrings
+        val unsent = store.pendingFiles().size + store.unreadableCount()
+        _binding.fabOtaHistory.text = if (unsent > 0) {
+            String.format(strings.otaHistoryButtonPending, unsent)
+        } else {
+            strings.otaHistoryButtonLabel
+        }
+        _binding.fabOtaHistory.backgroundTintList = if (unsent > 0) {
+            android.content.res.ColorStateList.valueOf(ContextCompat.getColor(this, R.color.silabs_red))
+        } else {
+            otaHistoryFabTint
         }
     }
 

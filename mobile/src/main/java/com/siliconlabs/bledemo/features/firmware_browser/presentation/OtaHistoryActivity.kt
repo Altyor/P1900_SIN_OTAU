@@ -7,8 +7,12 @@ import com.siliconlabs.bledemo.base.activities.BaseActivity
 import com.siliconlabs.bledemo.databinding.ActivityOtaHistoryBinding
 import com.siliconlabs.bledemo.features.firmware_browser.domain.OtaHistoryRecord
 import com.siliconlabs.bledemo.features.firmware_browser.domain.OtaHistoryStore
+import com.siliconlabs.bledemo.features.firmware_browser.domain.OtaHistorySyncWorker
 import com.siliconlabs.bledemo.features.firmware_browser.domain.UiStrings
 import com.siliconlabs.bledemo.utils.CustomToastManager
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 class OtaHistoryActivity : BaseActivity() {
 
@@ -48,6 +52,14 @@ class OtaHistoryActivity : BaseActivity() {
             }
         })
 
+        binding.btnRetrySync.text = UiStrings.otaHistoryRetrySync
+        binding.btnRetrySync.setOnClickListener {
+            OtaHistorySyncWorker.syncNow(this)
+            CustomToastManager.showSuccess(this, UiStrings.otaHistoryRetryStarted)
+        }
+        // Re-count after every sync pass so the warning clears on its own.
+        OtaHistorySyncWorker.observe(this).observe(this) { refreshPendingWarning() }
+
         binding.btnExportCsv.setOnClickListener {
             val file = OtaHistoryStore.exportCsv(visibleRecords)
             if (file != null) {
@@ -58,6 +70,31 @@ class OtaHistoryActivity : BaseActivity() {
                 CustomToastManager.showError(this, UiStrings.otaHistoryExportFailed)
             }
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        refreshPendingWarning()
+    }
+
+    /** Records still only on this tablet (not yet in the database). */
+    private fun refreshPendingWarning() {
+        val pending = OtaHistoryStore.pendingFiles().size
+        val unreadable = OtaHistoryStore.unreadableCount()
+        val lines = mutableListOf<String>()
+        if (pending > 0) {
+            val oldest = OtaHistoryStore.oldestPendingMillis()?.let {
+                SimpleDateFormat("dd/MM/yyyy HH:mm", Locale.FRANCE).format(Date(it))
+            } ?: "?"
+            lines += String.format(UiStrings.otaHistoryPendingWarning, pending, oldest)
+        }
+        if (unreadable > 0) {
+            lines += String.format(UiStrings.otaHistoryUnreadableWarning, unreadable)
+        }
+        binding.layoutPendingWarning.visibility = if (lines.isEmpty()) View.GONE else View.VISIBLE
+        binding.tvPendingWarning.text = lines.joinToString("\n\n")
+        // Retrying only helps the queue; parked files need a person.
+        binding.btnRetrySync.visibility = if (pending > 0) View.VISIBLE else View.GONE
     }
 
     private fun applyFilter(query: String) {

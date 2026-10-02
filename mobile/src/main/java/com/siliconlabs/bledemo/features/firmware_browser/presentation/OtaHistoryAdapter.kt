@@ -59,13 +59,14 @@ class OtaHistoryAdapter : RecyclerView.Adapter<OtaHistoryAdapter.ViewHolder>() {
                 "MAC : ${record.deviceMac ?: "—"}"
 
             val isPass = record.result == "PASS"
-            binding.tvItemResult.text = if (isPass) UiStrings.otaHistoryResultPass else UiStrings.otaHistoryResultFail
-            binding.tvItemResult.setTextColor(
-                ContextCompat.getColor(context, if (isPass) R.color.silabs_green else R.color.silabs_red)
-            )
-            binding.ivItemResult.setImageResource(
-                if (isPass) R.drawable.ic_circle_green else R.drawable.ic_circle_red
-            )
+            val (label, color, icon) = when (record.result) {
+                "PASS" -> Triple(UiStrings.otaHistoryResultPass, R.color.silabs_green, R.drawable.ic_circle_green)
+                "ABANDONED" -> Triple(UiStrings.otaHistoryResultAbandoned, R.color.silabs_orange, R.drawable.ic_circle_orange)
+                else -> Triple(UiStrings.otaHistoryResultFail, R.color.silabs_red, R.drawable.ic_circle_red)
+            }
+            binding.tvItemResult.text = label
+            binding.tvItemResult.setTextColor(ContextCompat.getColor(context, color))
+            binding.ivItemResult.setImageResource(icon)
 
             if (!isPass && !record.failureReason.isNullOrBlank()) {
                 binding.tvItemFailureReason.visibility = View.VISIBLE

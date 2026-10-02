@@ -103,6 +103,10 @@ class DeviceServicesActivity : BaseActivity() {
     private var otaResultRecorded = false
     // Start of the current OTA attempt, for the history record (set with otaWasRun).
     private var otaStartMillis: Long? = null
+    // For the ABANDONED history record: best upload progress of this attempt
+    // and the last failure seen (retries exhausted, disconnect, ...).
+    private var otaMaxProgress = 0f
+    private var otaLastFailure: String? = null
     private var discoveryPending = false
     private var mtuReadType = MtuReadType.VIEW_INITIALIZATION
     private var isLogFragmentOn = false
@@ -439,6 +443,7 @@ class DeviceServicesActivity : BaseActivity() {
                                 else -> {
                                     Log.e("OTA_DEBUG", "Unexpected disconnection in IDLE state: status=$status")
                                     if (otaInProgress) {
+                                        otaLastFailure = String.format(com.siliconlabs.bledemo.features.firmware_browser.domain.UiStrings.otaAbandonedDisconnect, status)
                                         com.siliconlabs.bledemo.features.firmware_browser.domain.OtaFileLogger
                                             .markOtaFailed(
                                                 "Unexpected disconnection in IDLE state: status=$status",
@@ -1339,6 +1344,8 @@ class DeviceServicesActivity : BaseActivity() {
             otaWasRun = true
             otaResultRecorded = false
             otaStartMillis = System.currentTimeMillis()
+            otaMaxProgress = 0f
+            otaLastFailure = null
         }
         otaInProgress = true
 
@@ -1512,6 +1519,9 @@ class DeviceServicesActivity : BaseActivity() {
     }
 
     override fun onDestroy() {
+        // Backstop for when Android closes the screen without finish(); a
+        // rotation is not the end of the attempt.
+        if (!isChangingConfigurations) recordAbandonedOtaIfNeeded()
         super.onDestroy()
 
         mtuRequestDialog?.dismiss()
@@ -1529,6 +1539,7 @@ class DeviceServicesActivity : BaseActivity() {
     }
 
     override fun finish() {
+        recordAbandonedOtaIfNeeded()
         releaseWakeLock()
         hideOtaLoadingDialog()
         hideOtaProgressDialog()
@@ -2089,6 +2100,7 @@ class DeviceServicesActivity : BaseActivity() {
         val bitrate = if (waiting_time > 0) 8 * pack.toFloat() / waiting_time else 0f
 
         Log.d("OTA_DEBUG", "Data rate: $bitrate kbps, progress: $pgss%")
+        otaMaxProgress = maxOf(otaMaxProgress, pgss.toFloat())
 
         if (pack > 0) {
             handler.post {
@@ -2789,7 +2801,31 @@ class DeviceServicesActivity : BaseActivity() {
         }
     }
 
-    /** Persists the just-decided PASS/FAIL verdict to the local OTA history store. */
+    /**
+     * An OTA was launched on this part but the screen is closing with no
+     * PASS/FAIL (retries exhausted, aborted before upload, operator backed
+     * out, verify never completed). Without this the part leaves no history
+     * and never reaches the database. Reads are the last values seen and may
+     * still be the pre-OTA ones.
+     */
+    private fun recordAbandonedOtaIfNeeded() {
+        if (!otaWasRun || otaResultRecorded) return
+        otaResultRecorded = true
+        val strings = com.siliconlabs.bledemo.features.firmware_browser.domain.UiStrings
+        val stage = when {
+            otaCompleted -> strings.otaAbandonedVerify
+            otaMaxProgress > 0f -> String.format(Locale.FRANCE, strings.otaAbandonedUpload, otaMaxProgress)
+            else -> strings.otaAbandonedNoUpload
+        }
+        val reason = listOfNotNull(otaLastFailure, stage).joinToString(" — ")
+        Log.w("OTA_DEBUG", "OTA closed without verdict, recording ABANDONED: $reason")
+        val validation = selectedValidation
+        recordOtaHistory(result = "ABANDONED", failureReason = reason, model = modelNumber,
+            antenna = firmwareVersionAntenna, power = firmwareVersionPower,
+            expectedModel = validation?.postModel, validation = validation)
+    }
+
+    /** Persists the just-decided PASS/FAIL (or ABANDONED) result to the local OTA history store. */
     private fun recordOtaHistory(
         result: String,
         failureReason: String?,
@@ -2797,7 +2833,7 @@ class DeviceServicesActivity : BaseActivity() {
         antenna: String?,
         power: String?,
         expectedModel: String?,
-        validation: com.siliconlabs.bledemo.features.firmware_browser.domain.FirmwareValidation
+        validation: com.siliconlabs.bledemo.features.firmware_browser.domain.FirmwareValidation?
     ) {
         val selection = com.siliconlabs.bledemo.features.firmware_browser.domain.FirmwareSelection
         com.siliconlabs.bledemo.features.firmware_browser.domain.OtaHistoryStore.record(
@@ -2814,8 +2850,8 @@ class DeviceServicesActivity : BaseActivity() {
                 firmwareVersionAntenna = antenna,
                 firmwareVersionPower = power,
                 expectedModel = expectedModel,
-                expectedAntenna = validation.antennaVersion,
-                expectedPower = validation.powerVersion,
+                expectedAntenna = validation?.antennaVersion,
+                expectedPower = validation?.powerVersion,
                 result = result,
                 failureReason = failureReason,
                 tabletId = com.siliconlabs.bledemo.features.firmware_browser.domain.TabletId.get(this),
@@ -2880,6 +2916,7 @@ class DeviceServicesActivity : BaseActivity() {
         } else {
             Log.e("OTA_DEBUG", "Max OTA retries ($MAX_OTA_RETRIES) exceeded")
             otaInProgress = false
+            otaLastFailure = String.format(com.siliconlabs.bledemo.features.firmware_browser.domain.UiStrings.otaAbandonedRetries, MAX_OTA_RETRIES)
             com.siliconlabs.bledemo.features.firmware_browser.domain.OtaFileLogger
                 .markOtaFailed(
                     "Max OTA retries ($MAX_OTA_RETRIES) exceeded",

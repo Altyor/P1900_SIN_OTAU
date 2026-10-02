@@ -89,6 +89,17 @@ object OtaHistoryStore {
             ?.sortedBy { it.name }
             ?: emptyList()
 
+    /** Parked files that were never sent (see parkPending). */
+    fun unreadableCount(): Int =
+        pendingDir?.let { File(it, UNREADABLE_DIR_NAME) }
+            ?.listFiles { f -> f.isFile && f.name.endsWith(".json") }
+            ?.size ?: 0
+
+    /** End-of-OTA time of the oldest unsent record, from its file name
+     *  (`<timestampMillis>_<mac>_<result>.json`). Null if none or unparseable. */
+    fun oldestPendingMillis(): Long? =
+        pendingFiles().firstOrNull()?.name?.substringBefore('_')?.toLongOrNull()
+
     /** Moves an unparseable pending file aside so it can't block the queue. */
     fun parkPending(file: File) {
         val parked = File(file.parentFile, UNREADABLE_DIR_NAME).apply { mkdirs() }
