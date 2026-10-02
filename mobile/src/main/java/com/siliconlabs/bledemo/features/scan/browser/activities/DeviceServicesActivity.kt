@@ -106,6 +106,8 @@ class DeviceServicesActivity : BaseActivity() {
     // For the ABANDONED history record: best upload progress of this attempt
     // and the last failure seen (retries exhausted, disconnect, ...).
     private var otaMaxProgress = 0f
+    // Last 5 % step written to the OTA log (reset when an upload starts at pack 0).
+    private var otaLoggedProgressStep = -1
     private var otaLastFailure: String? = null
     private var discoveryPending = false
     private var mtuReadType = MtuReadType.VIEW_INITIALIZATION
@@ -770,7 +772,10 @@ class DeviceServicesActivity : BaseActivity() {
             super.onCharacteristicWrite(gatt, characteristic, status)
             remoteServicesFragment.updateCurrentCharacteristicView(characteristic.uuid, status)
 
-            Log.d("OTA_DEBUG", "onCharacteristicWrite: UUID=${characteristic.uuid}, status=$status, viewState=$viewState")
+            // OTA_DATA successes are one per packet; failures are logged below.
+            if (characteristic.uuid != UuidConsts.OTA_DATA) {
+                Log.d("OTA_DEBUG", "onCharacteristicWrite: UUID=${characteristic.uuid}, status=$status, viewState=$viewState")
+            }
 
             if (status != BluetoothGatt.GATT_SUCCESS) {
                 Log.e("OTA_DEBUG", "Characteristic write failed: status=$status, UUID=${characteristic.uuid}")
@@ -847,7 +852,6 @@ class DeviceServicesActivity : BaseActivity() {
                     }
 
                     UuidConsts.OTA_DATA -> {
-                        Log.d("OTA_DEBUG", "OTA_DATA write successful, handling reliable upload response")
                         handleReliableUploadResponse()
                     }
                 }
@@ -1161,10 +1165,8 @@ class DeviceServicesActivity : BaseActivity() {
     private fun handleReliableUploadResponse() {
         if (reliable) {
             pack += mtuDivisible
-            Log.d("OTA_DEBUG", "handleReliableUploadResponse: pack=$pack, fileSize=${otafile?.size}, remaining=${(otafile?.size ?: 0) - pack}")
 
             if (pack <= otafile?.size!! - 1) {
-                Log.d("OTA_DEBUG", "Continuing reliable upload, next packet")
                 otaWriteDataReliable()
             } else if (pack > otafile?.size!! - 1) {
                 Log.d("OTA_DEBUG", "Reliable upload complete, stopping progress and sending END command")
@@ -2026,8 +2028,6 @@ class DeviceServicesActivity : BaseActivity() {
      */
     @Synchronized
     fun otaWriteDataReliable() {
-        Log.d("OTA_DEBUG", "otaWriteDataReliable: pack=$pack, mtuDivisible=$mtuDivisible, fileSize=${otafile?.size}")
-
         val writearray: ByteArray
         val pgss: Float
 
@@ -2051,7 +2051,6 @@ class DeviceServicesActivity : BaseActivity() {
             pgss = ((pack + last).toFloat() / (otafile?.size!! - 1)) * 100
             Log.d("OTA_DEBUG", "Final packet: bytes $pack to ${pack + last} (${writearray.size} bytes), progress=$pgss%")
         } else {
-            Log.d("OTA_DEBUG", "Writing regular packet")
             var j = 0
             writearray = ByteArray(mtuDivisible)
             for (i in pack until pack + mtuDivisible) {
@@ -2059,7 +2058,6 @@ class DeviceServicesActivity : BaseActivity() {
                 j++
             }
             pgss = ((pack + mtuDivisible).toFloat() / (otafile?.size!! - 1)) * 100
-            Log.d("OTA_DEBUG", "Regular packet: bytes $pack to ${pack + mtuDivisible} (${writearray.size} bytes), progress=$pgss%")
         }
 
         val charac = bluetoothGatt?.getService(UuidConsts.OTA_SERVICE)
@@ -2073,9 +2071,7 @@ class DeviceServicesActivity : BaseActivity() {
         charac.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT // Reliable mode needs ACK
         charac.value = writearray
 
-        Log.d("OTA_DEBUG", "Writing OTA data packet (${writearray.size} bytes) - reliable mode")
         val result = bluetoothGatt?.writeCharacteristic(charac)
-        Log.d("OTA_DEBUG", "writeCharacteristic result: $result")
 
         if (result != true) {
             // GATT busy (another op still in flight). Without recovery the upload pump
@@ -2099,8 +2095,15 @@ class DeviceServicesActivity : BaseActivity() {
         val waiting_time = (System.currentTimeMillis() - otatime)
         val bitrate = if (waiting_time > 0) 8 * pack.toFloat() / waiting_time else 0f
 
-        Log.d("OTA_DEBUG", "Data rate: $bitrate kbps, progress: $pgss%")
-        otaMaxProgress = maxOf(otaMaxProgress, pgss.toFloat())
+        // Per-packet logging (~10 lines x ~1700 packets) made one upload ~1.7 MB
+        // and pushed any retried session over OtaFileLogger's cap. Log every 5 %.
+        if (pack == 0) otaLoggedProgressStep = -1
+        val progressStep = (pgss / 5f).toInt()
+        if (progressStep > otaLoggedProgressStep) {
+            otaLoggedProgressStep = progressStep
+            Log.d("OTA_DEBUG", "Upload progress: $pgss% (byte $pack/${otafile?.size}, $bitrate kbps)")
+        }
+        otaMaxProgress = maxOf(otaMaxProgress, pgss)
 
         if (pack > 0) {
             handler.post {
@@ -2819,6 +2822,13 @@ class DeviceServicesActivity : BaseActivity() {
         }
         val reason = listOfNotNull(otaLastFailure, stage).joinToString(" — ")
         Log.w("OTA_DEBUG", "OTA closed without verdict, recording ABANDONED: $reason")
+        // otaLastFailure set = markOtaFailed already saved this session's log;
+        // otherwise (e.g. operator backed out) save it now, or the next part's
+        // OTA start wipes it.
+        if (otaLastFailure == null) {
+            com.siliconlabs.bledemo.features.firmware_browser.domain.OtaFileLogger
+                .markOtaFailed("ABANDONED — $reason", bluetoothGatt?.device?.address ?: bluetoothDevice?.address)
+        }
         val validation = selectedValidation
         recordOtaHistory(result = "ABANDONED", failureReason = reason, model = modelNumber,
             antenna = firmwareVersionAntenna, power = firmwareVersionPower,

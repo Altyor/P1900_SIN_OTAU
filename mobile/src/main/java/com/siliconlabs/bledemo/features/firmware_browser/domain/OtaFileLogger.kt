@@ -43,14 +43,24 @@ object OtaFileLogger {
     private const val TAG = "OtaFileLogger"
     private const val CURRENT_NAME = "ota_log_current.txt"
     private const val FAILED_PREFIX = "ota_log_failed_"
-    private const val MAX_BYTES = 2_000_000L  // hard cap per session
-    private const val MAX_FAILED_FILES = 20    // keep only the most recent N
+    // A session is ~50 KB now that upload progress is logged per 5 % rather
+    // than per packet, so MAX_BYTES is a runaway guard, not a normal limit.
+    private const val MAX_BYTES = 2_000_000L
+    // Past MAX_BYTES only warnings/errors are kept (the outcome banner is
+    // always written), up to this absolute ceiling.
+    private const val HARD_MAX_BYTES = 4_000_000L
+    private const val MAX_FAILED_FILES = 200   // keep only the most recent N (~50 KB each)
 
     private val lock = Any()
     private var dir: File? = null
     private var currentFile: File? = null
     private var writer: BufferedWriter? = null
     private var thread: Thread? = null
+    // Set once the current session passes MAX_BYTES; cleared with each new file.
+    private var capped = false
+
+    // threadtime format: "MM-DD HH:MM:SS.mmm  PID  TID L TAG: msg" — W/E/F level.
+    private val warnOrError = Regex("""^\S+ \S+\s+\d+\s+\d+ [WEF] """)
 
     fun start(context: Context) {
         synchronized(lock) {
@@ -82,18 +92,21 @@ object OtaFileLogger {
                         val w = writer ?: return@synchronized
                         val cf = currentFile ?: return@synchronized
                         try {
-                            if (cf.length() > MAX_BYTES) {
-                                // Hard cap: snapshot to a failed-style name and start fresh,
-                                // since something is firehosing logs without an outcome.
-                                w.flush(); w.close()
-                                val ts = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
-                                val capped = File(cf.parentFile, "${FAILED_PREFIX}capped_$ts.txt")
-                                cf.renameTo(capped)
-                                writer = openWriter(cf)
+                            // Over the cap, keep the session in this one file (never
+                            // split it: the tail holds the outcome, and a split-off
+                            // tail used to be wiped by the next part's OTA) but drop
+                            // debug chatter.
+                            val size = cf.length()
+                            if (size > MAX_BYTES && !capped) {
+                                capped = true
+                                writeBanner("Log over ${MAX_BYTES / 1_000_000} MB — keeping warnings/errors only until the outcome")
                             }
-                            writer!!.write(line)
-                            writer!!.write("\n")
-                            writer!!.flush()
+                            if (capped && (size > HARD_MAX_BYTES || !warnOrError.containsMatchIn(line))) {
+                                return@synchronized
+                            }
+                            w.write(line)
+                            w.write("\n")
+                            w.flush()
                         } catch (e: Exception) {
                             Log.w(TAG, "log write failed: ${e.message}")
                         }
@@ -192,8 +205,11 @@ object OtaFileLogger {
         }
     }
 
-    private fun openWriter(file: File): BufferedWriter =
-        BufferedWriter(OutputStreamWriter(FileOutputStream(file, /* append = */ true)))
+    /** Every session/file switch goes through here, so the cap resets with it. */
+    private fun openWriter(file: File): BufferedWriter {
+        capped = false
+        return BufferedWriter(OutputStreamWriter(FileOutputStream(file, /* append = */ true)))
+    }
 
     private fun writeBanner(text: String) {
         try {
